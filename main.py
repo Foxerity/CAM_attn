@@ -43,7 +43,7 @@ def load_config(config_path):
             'target_condition': 'depth',  # 目标条件
             'source_conditions': ['canny', 'sketch'],  # 源条件
             'img_size': 256,  # 图像大小
-            'batch_size': 32,  # 批量大小
+            'batch_size': 16,  # 批量大小
             'num_workers': 4,  # 数据加载线程数
             'epochs': 100,  # 训练轮数
             'lr': 2e-4,  # 学习率
