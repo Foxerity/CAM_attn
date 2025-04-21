@@ -2,5 +2,5 @@
 /output/*
 /__pycache__/*
 /output_enhanced/*
-/eval_results/*
-*.pyc
+/evaluation_results/*
+/evaluation/__pycache__/*
