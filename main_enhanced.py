@@ -16,9 +16,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description='CAM: Condition Alignment Module')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'test'],
                         help='运行模式: train或test')
-    parser.add_argument('--config', type=str, default='config.json',
+    parser.add_argument('--config', type=str, default='config_enhanced.json',
                         help='配置文件路径')
-    parser.add_argument('--checkpoint', type=str, default=None,
+    parser.add_argument('--checkpoint', type=str, default=r"output_enhanced\checkpoints\best_model.pth",
                         help='测试模式下的检查点路径')
     parser.add_argument('--input', type=str, default=None,
                         help='测试模式下的输入图像路径')
@@ -44,7 +44,7 @@ def load_config(config_path):
         config = {
             'dataset_path': r"B:\datasets\test",  # 数据集路径
             'target_condition': 'depth',  # 目标条件
-            'source_conditions': ['canny', 'sketch'],  # 源条件
+            'source_conditions': ['canny', 'sketch', 'color'],  # 源条件
             'img_size': 256,  # 图像大小
             'batch_size': 16,  # 批量大小
             'num_workers': 4,  # 数据加载线程数

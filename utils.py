@@ -7,9 +7,19 @@ from torchvision import transforms
 import torch.nn.functional as F
 from tqdm import tqdm
 import json
-
+import random
 from model import load_model
 
+
+def seed_everything(seed):
+    """设置随机种子以确保实验可重复性"""
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def tensor_to_image(tensor):
     """将张量转换为PIL图像
@@ -156,6 +166,102 @@ def compute_ssim(img1, img2):
     # 计算SSIM
     ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
     return ssim_map.mean().item()
+
+
+def save_image_grid(images, output_path, nrow=4, padding=2, normalize=True, value_range=(-1, 1)):
+    """将多张图像保存为网格布局
+    
+    Args:
+        images: 形状为[B, C, H, W]的张量，或者包含(标签,张量)元组的列表
+        output_path: 输出文件路径
+        nrow: 每行图像数量
+        padding: 图像间的填充像素数
+        normalize: 是否归一化图像
+        value_range: 输入图像的值范围
+    """
+    from torchvision.utils import save_image
+    # 确保输出目录存在
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # 检查输入类型，处理包含元组的列表
+    if isinstance(images, list) and len(images) > 0 and isinstance(images[0], tuple):
+        # 创建一个新的图像列表，每个批次中只取第一个样本
+        # 这样可以确保所有图像具有相同的维度 [C, H, W]
+        tensor_images = []
+        sample_idx = 0  # 选择批次中的第一个样本
+        
+        for label, img_tensor in images:
+            try:
+                # 如果是批量张量 [B, C, H, W]，只取第一个样本
+                if img_tensor.dim() == 4:
+                    tensor_images.append(img_tensor[sample_idx].cpu())
+                else:  # 如果已经是 [C, H, W]
+                    tensor_images.append(img_tensor.cpu())
+            except Exception as e:
+                print(f"处理图像 '{label}' 时出错: {e}")
+                print(f"图像形状: {img_tensor.shape}")
+        
+        # 保存图像网格
+        try:
+            save_image(tensor_images, output_path, nrow=nrow, padding=padding, normalize=normalize, value_range=value_range)
+            print(f"成功保存图像网格到: {output_path}")
+        except RuntimeError as e:
+            print(f"保存图像网格时出错: {e}")
+            print("尝试单独保存每个图像...")
+            
+            # 创建输出目录
+            base_dir = os.path.dirname(output_path)
+            base_name = os.path.basename(output_path).split('.')[0]
+            single_img_dir = os.path.join(base_dir, f"{base_name}_single")
+            os.makedirs(single_img_dir, exist_ok=True)
+            
+            # 单独保存每个图像
+            for i, (label, img_tensor) in enumerate(images):
+                try:
+                    if img_tensor.dim() == 4:  # [B, C, H, W]
+                        # 只保存第一个样本
+                        save_image(img_tensor[sample_idx].cpu(), 
+                                  os.path.join(single_img_dir, f"{label}.png"), 
+                                  normalize=normalize, 
+                                  value_range=value_range)
+                    else:  # [C, H, W]
+                        save_image(img_tensor.cpu(), 
+                                  os.path.join(single_img_dir, f"{label}.png"), 
+                                  normalize=normalize, 
+                                  value_range=value_range)
+                    print(f"已保存单独图像: {label}")
+                except Exception as e:
+                    print(f"保存图像 '{label}' 时出错: {e}")
+    else:
+        # 直接保存图像网格
+        try:
+            # 如果是批量张量列表，确保所有张量都是 [C, H, W] 格式
+            if isinstance(images, list):
+                processed_images = []
+                for i, img in enumerate(images):
+                    if img.dim() == 4:  # [B, C, H, W]
+                        # 只取第一个样本
+                        processed_images.append(img[0].cpu())
+                    else:  # [C, H, W]
+                        processed_images.append(img.cpu())
+                save_image(processed_images, output_path, nrow=nrow, padding=padding, normalize=normalize, value_range=value_range)
+            else:
+                # 如果是单个批量张量，也只取第一个样本
+                if images.dim() == 4 and images.size(0) > 1:
+                    save_image(images[0].cpu(), output_path, normalize=normalize, value_range=value_range)
+                else:
+                    save_image(images.cpu(), output_path, nrow=nrow, padding=padding, normalize=normalize, value_range=value_range)
+            print(f"成功保存图像到: {output_path}")
+        except RuntimeError as e:
+            print(f"保存图像时出错: {e}")
+            print("请检查所有图像的形状是否一致")
+            # 打印图像形状以便调试
+            if isinstance(images, list):
+                for i, img in enumerate(images):
+                    print(f"图像 {i} 形状: {img.shape}")
+            else:
+                print(f"图像形状: {images.shape}")
+
 
 
 def batch_process(model, source_dir, target_dir, output_dir, config):
