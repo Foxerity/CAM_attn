@@ -183,20 +183,21 @@ class CAMPlus(nn.Module):
         self.config = config
         
         # 获取配置参数
-        input_channels = config.get('input_channels', 3)
-        output_channels = config.get('output_channels', 3)
         base_channels = config.get('base_channels', 64)
         depth = config.get('depth', 4)  # UNet深度
         attention_type = config.get('attention_type', 'cbam')
         beta = config.get('beta', 0.01)
         self.source_conditions = config.get('source_conditions', ['canny', 'sketch', 'color'])
         
-        # 为每种条件创建专用编码器（现在所有条件使用相同的编码器结构）
+        # 为每种条件创建专用编码器，根据条件类型设置不同的输入通道数
         self.encoders = nn.ModuleDict()
         for condition in self.source_conditions:
+            # 颜色条件使用3通道，其他条件（sketch、canny、depth）使用1通道
+            input_channels = 3 if condition == 'color' else 1
             self.encoders[condition] = StandardEncoder(
                 input_channels, base_channels, depth, attention_type
             )
+            print(f"为条件 {condition} 创建编码器，输入通道数: {input_channels}")
         
         # 为每个编码器创建独立的信息瓶颈层
         self.bottlenecks = nn.ModuleDict()
@@ -223,14 +224,18 @@ class CAMPlus(nn.Module):
             self.up_blocks.append(UNetBlock(in_channels, out_channels, attention_type, down=False))
             in_channels = out_channels
         
-        # 输出层
+        # 输出层 - 修改为输出单通道深度图
+        output_channels = 1  # 固定为单通道输出
         self.outc = nn.Sequential(
             nn.Conv2d(base_channels, output_channels, kernel_size=3, padding=1),
             nn.Tanh()  # 输出范围为[-1, 1]
         )
         
         # 特征提取器，用于从目标图像中提取特征进行匹配
-        self.target_encoder = StandardEncoder(input_channels, base_channels, depth, attention_type)
+        # 目标条件（通常是depth）使用单通道输入
+        target_input_channels = 1  # 目标条件通常是单通道（如深度图）
+        self.target_encoder = StandardEncoder(target_input_channels, base_channels, depth, attention_type)
+        print(f"为目标条件创建编码器，输入通道数: {target_input_channels}")
     
     def forward(self, source_images, target_img=None):
         """前向传播
@@ -311,6 +316,16 @@ def train_model_plus(config):
     Args:
         config: 配置参数
     """
+    # 确保配置中包含设备信息
+    if 'device' not in config:
+        config['device'] = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    print(f"使用设备: {config['device']}")
+    
+    # 设置CUDA性能优化
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True  # 加速卷积操作
+        torch.backends.cudnn.deterministic = False  # 允许非确定性优化
     from data_loader_plus import get_multi_condition_loaders
     from losses import ReconstructionLoss, FeatureMatchingLoss, ContrastiveLoss
     import os
@@ -605,11 +620,17 @@ def inference_plus(model, source_images, config):
     from torchvision import transforms
     from PIL import Image
     
-    # 图像转换
-    transform = transforms.Compose([
+    # 为RGB和灰度图像定义不同的转换
+    transform_rgb = transforms.Compose([
         transforms.Resize((config['img_size'], config['img_size'])),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+    
+    transform_gray = transforms.Compose([
+        transforms.Resize((config['img_size'], config['img_size'])),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
     ])
     
     # 确保模型处于评估模式
@@ -619,8 +640,15 @@ def inference_plus(model, source_images, config):
     processed_images = {}
     for condition, img in source_images.items():
         if isinstance(img, Image.Image):
-            # 如果是PIL图像，应用转换
-            img_tensor = transform(img).unsqueeze(0).to(config['device'])
+            # 根据条件类型选择正确的转换
+            if condition == 'color':
+                # 颜色图像使用RGB转换
+                img_tensor = transform_rgb(img).unsqueeze(0).to(config['device'])
+            else:
+                # 其他条件（sketch、canny、depth）使用灰度转换
+                # 确保图像是单通道
+                img_gray = img.convert('L') if img.mode != 'L' else img
+                img_tensor = transform_gray(img_gray).unsqueeze(0).to(config['device'])
         else:
             # 如果已经是张量，确保形状正确并移动到正确的设备
             img_tensor = img.to(config['device'])
@@ -632,6 +660,9 @@ def inference_plus(model, source_images, config):
     # 推理
     with torch.no_grad():
         outputs = model(processed_images)
-        output_img = outputs['output']
+        # 获取第一个条件的输出作为结果
+        # 注意：outputs['outputs']是一个字典，包含每个条件的输出
+        first_condition = list(outputs['outputs'].keys())[0]
+        output_img = outputs['outputs'][first_condition]
     
     return output_img

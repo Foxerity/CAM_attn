@@ -179,6 +179,7 @@ def save_image_grid(images, output_path, nrow=4, padding=2, normalize=True, valu
         normalize: 是否归一化图像
         value_range: 输入图像的值范围
     """
+    import torch
     from torchvision.utils import save_image
     # 确保输出目录存在
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -194,9 +195,17 @@ def save_image_grid(images, output_path, nrow=4, padding=2, normalize=True, valu
             try:
                 # 如果是批量张量 [B, C, H, W]，只取第一个样本
                 if img_tensor.dim() == 4:
-                    tensor_images.append(img_tensor[sample_idx].cpu())
+                    img = img_tensor[sample_idx].cpu()
                 else:  # 如果已经是 [C, H, W]
-                    tensor_images.append(img_tensor.cpu())
+                    img = img_tensor.cpu()
+                
+                # 统一通道数：将单通道图像转换为三通道图像
+                if img.dim() == 3 and img.size(0) == 1:  # 单通道图像 [1, H, W]
+                    # 复制单通道到三个通道
+                    img = img.repeat(3, 1, 1)  # 变为 [3, H, W]
+                    print(f"将图像 '{label}' 从单通道转换为三通道")
+                
+                tensor_images.append(img)
             except Exception as e:
                 print(f"处理图像 '{label}' 时出错: {e}")
                 print(f"图像形状: {img_tensor.shape}")
@@ -220,15 +229,15 @@ def save_image_grid(images, output_path, nrow=4, padding=2, normalize=True, valu
                 try:
                     if img_tensor.dim() == 4:  # [B, C, H, W]
                         # 只保存第一个样本
-                        save_image(img_tensor[sample_idx].cpu(), 
-                                  os.path.join(single_img_dir, f"{label}.png"), 
-                                  normalize=normalize, 
-                                  value_range=value_range)
+                        img = img_tensor[sample_idx].cpu()
                     else:  # [C, H, W]
-                        save_image(img_tensor.cpu(), 
-                                  os.path.join(single_img_dir, f"{label}.png"), 
-                                  normalize=normalize, 
-                                  value_range=value_range)
+                        img = img_tensor.cpu()
+                    
+                    # 保存图像，单通道图像会自动转换为灰度图
+                    save_image(img, 
+                              os.path.join(single_img_dir, f"{label}.png"), 
+                              normalize=normalize, 
+                              value_range=value_range)
                     print(f"已保存单独图像: {label}")
                 except Exception as e:
                     print(f"保存图像 '{label}' 时出错: {e}")
@@ -241,9 +250,16 @@ def save_image_grid(images, output_path, nrow=4, padding=2, normalize=True, valu
                 for i, img in enumerate(images):
                     if img.dim() == 4:  # [B, C, H, W]
                         # 只取第一个样本
-                        processed_images.append(img[0].cpu())
+                        img = img[0].cpu()
                     else:  # [C, H, W]
-                        processed_images.append(img.cpu())
+                        img = img.cpu()
+                    
+                    # 统一通道数：将单通道图像转换为三通道图像
+                    if img.dim() == 3 and img.size(0) == 1:  # 单通道图像 [1, H, W]
+                        # 复制单通道到三个通道
+                        img = img.repeat(3, 1, 1)  # 变为 [3, H, W]
+                    
+                    processed_images.append(img)
                 save_image(processed_images, output_path, nrow=nrow, padding=padding, normalize=normalize, value_range=value_range)
             else:
                 # 如果是单个批量张量，也只取第一个样本

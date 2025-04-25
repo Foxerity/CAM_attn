@@ -109,9 +109,16 @@ def test_model(checkpoint_path, input_dir, output_path, config):
             print(f"警告: 条件 {condition} 的目录中没有图像: {condition_dir}")
             continue
         
-        # 加载图像
+        # 加载图像 - 根据条件类型选择正确的转换模式
         image_path = os.path.join(condition_dir, image_files[0])
-        source_images[condition] = Image.open(image_path).convert('RGB')
+        if condition == 'color':
+            # 颜色条件使用RGB模式（3通道）
+            source_images[condition] = Image.open(image_path).convert('RGB')
+            print(f"加载 {condition} 条件图像为RGB模式（3通道）")
+        else:
+            # 其他条件（sketch、canny、depth）使用L模式（单通道）
+            source_images[condition] = Image.open(image_path).convert('L')
+            print(f"加载 {condition} 条件图像为L模式（单通道）")
     
     if not source_images:
         print("错误: 没有找到任何输入图像")
@@ -165,12 +172,18 @@ def batch_process(checkpoint_path, source_dir, target_dir, output_dir, config):
     # 加载模型
     model = load_model_plus(checkpoint_path, config, config['device'])
     
-    # 图像转换
+    # 图像转换 - 为RGB和灰度图像定义不同的转换
     from torchvision import transforms
-    transform = transforms.Compose([
+    transform_rgb = transforms.Compose([
         transforms.Resize((config['img_size'], config['img_size'])),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+    
+    transform_gray = transforms.Compose([
+        transforms.Resize((config['img_size'], config['img_size'])),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
     ])
     
     # 获取目标目录中的所有图像文件
@@ -192,19 +205,25 @@ def batch_process(checkpoint_path, source_dir, target_dir, output_dir, config):
                     all_conditions_exist = False
                     break
                 
-                # 加载源条件图像
-                source_img = Image.open(condition_path).convert('RGB')
-                source_tensor = transform(source_img).unsqueeze(0).to(config['device'])
+                # 加载源条件图像 - 根据条件类型选择正确的转换
+                if condition == 'color':
+                    # 颜色条件使用RGB模式（3通道）
+                    source_img = Image.open(condition_path).convert('RGB')
+                    source_tensor = transform_rgb(source_img).unsqueeze(0).to(config['device'])
+                else:
+                    # 其他条件（sketch、canny、depth）使用L模式（单通道）
+                    source_img = Image.open(condition_path).convert('L')
+                    source_tensor = transform_gray(source_img).unsqueeze(0).to(config['device'])
                 source_images[condition] = source_tensor
             
             if not all_conditions_exist:
                 print(f"警告: 图像 {img_file} 在某些条件下不存在，跳过...")
                 continue
             
-            # 加载目标图像
+            # 加载目标图像（深度图为单通道）
             target_path = os.path.join(target_dir, img_file)
-            target_img = Image.open(target_path).convert('RGB')
-            target_tensor = transform(target_img).unsqueeze(0).to(config['device'])
+            target_img = Image.open(target_path).convert('L')  # 转换为单通道
+            target_tensor = transform_gray(target_img).unsqueeze(0).to(config['device'])
             
             # 生成对齐图像
             outputs = model(source_images)

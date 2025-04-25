@@ -71,8 +71,8 @@ class MultiConditionDataset(Dataset):
         class_name = img_info['class']
         img_name = img_info['name']
         
-        # 加载目标条件图像
-        target_img = Image.open(img_info['target_path']).convert('RGB')
+        # 加载目标条件图像 (深度图为单通道)
+        target_img = Image.open(img_info['target_path']).convert('L')  # 转换为单通道
         
         # 加载所有源条件图像
         source_images = {}
@@ -85,17 +85,30 @@ class MultiConditionDataset(Dataset):
                 img_name
             )
             
-            # 加载源条件图像
-            source_img = Image.open(source_path).convert('RGB')
-            
-            # 应用转换
-            if self.transform:
-                source_img = self.transform(source_img)
+            # 根据条件类型选择不同的加载模式
+            if condition == 'color':
+                # 颜色图像保持三通道
+                source_img = Image.open(source_path).convert('RGB')
+                # 应用RGB转换
+                if hasattr(self, 'transform_rgb'):
+                    source_img = self.transform_rgb(source_img)
+                elif self.transform:
+                    source_img = self.transform(source_img)
+            else:
+                # sketch、canny、depth转为单通道
+                source_img = Image.open(source_path).convert('L')
+                # 应用灰度转换
+                if hasattr(self, 'transform_gray'):
+                    source_img = self.transform_gray(source_img)
+                elif self.transform:
+                    source_img = self.transform(source_img)
             
             source_images[condition] = source_img
         
-        # 应用转换到目标图像
-        if self.transform:
+        # 应用转换到目标图像 (单通道)
+        if hasattr(self, 'transform_gray'):
+            target_img = self.transform_gray(target_img)
+        elif self.transform:
             target_img = self.transform(target_img)
         
         return {
@@ -116,11 +129,17 @@ def get_multi_condition_loaders(config):
     Returns:
         tuple: (train_loader, val_loader)
     """
-    # 定义图像转换
-    transform = transforms.Compose([
+    # 定义图像转换 - 为不同通道数的图像定义不同的归一化参数
+    transform_rgb = transforms.Compose([
         transforms.Resize((config['img_size'], config['img_size'])),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+    
+    transform_gray = transforms.Compose([
+        transforms.Resize((config['img_size'], config['img_size'])),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
     ])
     
     # 创建训练集
@@ -129,8 +148,11 @@ def get_multi_condition_loaders(config):
         target_condition=config['target_condition'],
         source_conditions=config['source_conditions'],
         split='train',
-        transform=transform
+        transform=None  # 不使用统一的transform
     )
+    # 设置不同类型的转换
+    train_dataset.transform_rgb = transform_rgb
+    train_dataset.transform_gray = transform_gray
     
     # 创建验证集
     val_dataset = MultiConditionDataset(
@@ -138,8 +160,11 @@ def get_multi_condition_loaders(config):
         target_condition=config['target_condition'],
         source_conditions=config['source_conditions'],
         split='val',
-        transform=transform
+        transform=None  # 不使用统一的transform
     )
+    # 设置不同类型的转换
+    val_dataset.transform_rgb = transform_rgb
+    val_dataset.transform_gray = transform_gray
     
     # 创建数据加载器
     train_loader = DataLoader(
