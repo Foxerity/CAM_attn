@@ -8,6 +8,17 @@ import numpy as np
 # from utils import seed_everything
 
 
+def seed_everything(seed):
+    """设置随机种子以确保实验可重复性"""
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 class MultiConditionDataset(Dataset):
     """用于多条件对齐的数据集加载器
     
@@ -165,6 +176,62 @@ def get_multi_condition_loaders(config):
     # 设置不同类型的转换
     val_dataset.transform_rgb = transform_rgb
     val_dataset.transform_gray = transform_gray
+    
+    # 创建数据加载器
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config['batch_size'],
+        shuffle=True,
+        num_workers=config['num_workers'],
+        pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True,
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config['batch_size'],
+        shuffle=False,
+        num_workers=config['num_workers'],
+        pin_memory=True
+    )
+    
+    return train_loader, val_loader
+
+
+def get_data_loaders(config):
+    """创建数据加载器
+    
+    Args:
+        config (dict): 配置字典，包含数据集路径、批量大小等参数
+        
+    Returns:
+        tuple: (train_loader, val_loader)
+    """
+    # 定义图像转换
+    transform = transforms.Compose([
+        transforms.Resize((config['img_size'], config['img_size'])),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+    
+    # 创建训练集
+    train_dataset = ConditionAlignmentDataset(
+        root_dir=config['dataset_path'],
+        target_condition=config['target_condition'],
+        source_conditions=config['source_conditions'],
+        split='train',
+        transform=transform
+    )
+    
+    # 创建验证集
+    val_dataset = ConditionAlignmentDataset(
+        root_dir=config['dataset_path'],
+        target_condition=config['target_condition'],
+        source_conditions=config['source_conditions'],
+        split='val',
+        transform=transform
+    )
     
     # 创建数据加载器
     train_loader = DataLoader(

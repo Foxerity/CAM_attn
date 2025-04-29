@@ -9,16 +9,14 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from data_loader import get_data_loaders, seed_everything
-
 
 class ConvBlock(nn.Module):
     """基本卷积块，包含卷积、批归一化和激活函数"""
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, num_groups=4):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.LeakyReLU(0.2, inplace=True)
+        self.bn = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True)
+        self.relu = nn.LeakyReLU(inplace=True)
         
     def forward(self, x):
         return self.relu(self.bn(self.conv(x)))
@@ -48,7 +46,7 @@ class ChannelAttention(nn.Module):
         
         self.fc = nn.Sequential(
             nn.Conv2d(channels, channels // reduction_ratio, kernel_size=1),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             nn.Conv2d(channels // reduction_ratio, channels, kernel_size=1)
         )
         
@@ -257,8 +255,7 @@ class UNetBlock(nn.Module):
             return x
         else:
             x = self.up(x)
-            if skip is not None:
-                x = torch.cat([x, skip], dim=1)
+            x = torch.cat([x, skip], dim=1)
             x = self.conv(x)
             x = self.attention(x)
             return x
@@ -358,198 +355,6 @@ class CAM(nn.Module):
             attention_maps[f'up_{i}'] = block.get_attention_maps()
         
         return attention_maps
-
-
-def train_model(config):
-    """训练CAM模型
-    
-    Args:
-        config (dict): 配置参数
-    """
-    # 设置随机种子
-    seed_everything(config['seed'])
-    
-    # 创建输出目录
-    os.makedirs(config['output_dir'], exist_ok=True)
-    os.makedirs(os.path.join(config['output_dir'], 'checkpoints'), exist_ok=True)
-    os.makedirs(os.path.join(config['output_dir'], 'samples'), exist_ok=True)
-    os.makedirs(os.path.join(config['output_dir'], 'attention_maps'), exist_ok=True)
-    
-    # 初始化TensorBoard
-    writer = SummaryWriter(log_dir=os.path.join(config['output_dir'], 'logs'))
-    
-    # 获取数据加载器
-    train_loader, val_loader = get_data_loaders(config)
-    
-    # 初始化模型
-    model = CAM(config).to(config['device'])
-    
-    # 初始化优化器
-    optimizer = optim.Adam(model.parameters(), lr=config['lr'], betas=(0.5, 0.999))
-    
-    # 学习率调度器
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=config['lr_step'], gamma=0.5)
-    
-    # 损失函数
-    l1_loss = nn.L1Loss()
-    
-    # 训练循环
-    best_val_loss = float('inf')
-    for epoch in range(config['epochs']):
-        model.train()
-        epoch_loss = 0.0
-        epoch_recon_loss = 0.0
-        epoch_kl_loss = 0.0
-        
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['epochs']}")
-        for batch in pbar:
-            source_img = batch['source_img'].to(config['device'])
-            target_img = batch['target_img'].to(config['device'])
-            
-            # 前向传播
-            output, mu, logvar = model(source_img)
-            
-            # 计算损失
-            recon_loss = l1_loss(output, target_img)
-            kl_loss = model.kl_divergence_loss(mu, logvar) / (output.size(0) * output.size(2) * output.size(3))
-            
-            # 总损失 = 重建损失 + beta * KL散度损失
-            loss = recon_loss + config['beta'] * kl_loss
-            
-            # 反向传播和优化
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            # 更新损失统计
-            epoch_loss += loss.item()
-            epoch_recon_loss += recon_loss.item()
-            epoch_kl_loss += kl_loss.item()
-            
-            # 更新进度条
-            pbar.set_postfix({
-                'loss': loss.item(),
-                'recon_loss': recon_loss.item(),
-                'kl_loss': kl_loss.item()
-            })
-        
-        # 更新学习率
-        scheduler.step()
-        
-        # 计算平均损失
-        avg_loss = epoch_loss / len(train_loader)
-        avg_recon_loss = epoch_recon_loss / len(train_loader)
-        avg_kl_loss = epoch_kl_loss / len(train_loader)
-        
-        # 记录训练损失
-        writer.add_scalar('Loss/train', avg_loss, epoch)
-        writer.add_scalar('Loss/recon_train', avg_recon_loss, epoch)
-        writer.add_scalar('Loss/kl_train', avg_kl_loss, epoch)
-        
-        # 验证
-        val_loss = validate_model(model, val_loader, l1_loss, config, epoch, writer)
-        
-        # 保存最佳模型
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': best_val_loss,
-                'config': config
-            }, os.path.join(config['output_dir'], 'checkpoints', 'best_model.pth'))
-            print(f"Saved best model with validation loss: {best_val_loss:.4f}")
-        
-        # 每N个epoch保存一次检查点
-        if (epoch + 1) % config['save_interval'] == 0:
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': avg_loss,
-                'config': config
-            }, os.path.join(config['output_dir'], 'checkpoints', f'model_epoch_{epoch+1}.pth'))
-    
-    writer.close()
-    print("Training completed!")
-
-
-def validate_model(model, val_loader, criterion, config, epoch, writer):
-    """验证模型性能
-    
-    Args:
-        model: CAM模型
-        val_loader: 验证数据加载器
-        criterion: 损失函数
-        config: 配置参数
-        epoch: 当前epoch
-        writer: TensorBoard写入器
-        
-    Returns:
-        float: 验证损失
-    """
-    model.eval()
-    val_loss = 0.0
-    val_recon_loss = 0.0
-    val_kl_loss = 0.0
-    
-    # 用于可视化的样本
-    vis_samples = []
-    
-    with torch.no_grad():
-        for i, batch in enumerate(val_loader):
-            source_img = batch['source_img'].to(config['device'])
-            target_img = batch['target_img'].to(config['device'])
-            
-            # 前向传播
-            output, mu, logvar = model(source_img)
-            
-            # 计算损失
-            recon_loss = criterion(output, target_img)
-            kl_loss = model.kl_divergence_loss(mu, logvar) / (output.size(0) * output.size(2) * output.size(3))
-            
-            # 总损失
-            loss = recon_loss + config['beta'] * kl_loss
-            
-            # 更新损失统计
-            val_loss += loss.item()
-            val_recon_loss += recon_loss.item()
-            val_kl_loss += kl_loss.item()
-            
-            # 保存前几个批次的样本用于可视化
-            if i < 2:  # 只保存前两个批次
-                for j in range(min(4, source_img.size(0))):  # 每个批次最多4个样本
-                    sample_dict = {
-                        'source': source_img[j].cpu(),
-                        'target': target_img[j].cpu(),
-                        'output': output[j].cpu()
-                    }
-                    
-                    # 如果是第一个样本，获取注意力图用于可视化
-                    if i == 0 and j == 0:
-                        # 获取模型的注意力图
-                        attention_maps = model.get_attention_maps()
-                        sample_dict['attention_maps'] = attention_maps
-                    
-                    vis_samples.append(sample_dict)
-    
-    # 计算平均损失
-    avg_val_loss = val_loss / len(val_loader)
-    avg_val_recon_loss = val_recon_loss / len(val_loader)
-    avg_val_kl_loss = val_kl_loss / len(val_loader)
-    
-    # 记录验证损失
-    writer.add_scalar('Loss/val', avg_val_loss, epoch)
-    writer.add_scalar('Loss/recon_val', avg_val_recon_loss, epoch)
-    writer.add_scalar('Loss/kl_val', avg_val_kl_loss, epoch)
-    
-    # 可视化样本
-    visualize_samples(vis_samples, epoch, config)
-    
-    print(f"Validation Loss: {avg_val_loss:.4f}, Recon Loss: {avg_val_recon_loss:.4f}, KL Loss: {avg_val_kl_loss:.4f}")
-    
-    return avg_val_loss
 
 
 def visualize_attention_maps(attention_maps, epoch, config):

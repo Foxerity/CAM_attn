@@ -1,158 +1,116 @@
-# CAM: 视觉条件对齐模块
+# CAM_attn
 
-## 项目概述
+条件对齐模块（Condition Alignment Module）是一种用于多条件图像生成的深度学习架构。本项目实现了CAM的增强版本，添加了注意力机制和信息瓶颈理论，以提高生成质量和模型鲁棒性。
 
-本项目实现了一个轻量级的视觉条件对齐模块（Condition Alignment Module, CAM），用于将不同的视觉条件（如深度图、草图、边缘图等）对齐到目标条件上。这种对齐方式可以使下游生成模型无需为每种视觉条件单独微调，从而实现条件切换与下游模型的解耦。
+## 主要特性
 
-### 核心特点
+- 多条件输入支持（边缘图、草图、颜色等）
+- 基于注意力机制的特征增强
+- 信息瓶颈理论指导的特征提取
+- 条件对齐和特征融合
 
-- **基于信息瓶颈理论**：利用信息瓶颈理论提取与目标条件相关的关键信息，丢弃无关信息
-- **轻量级设计**：模型结构轻量，训练成本低
-- **模块化架构**：可以轻松集成到现有的生成模型管道中
-- **条件解耦**：实现视觉条件与下游模型的解耦，无需为每种条件重新微调模型
+## 最新更新
 
-## 理论基础
+### 两阶段编码器架构与跨条件特征融合
 
-本项目基于信息瓶颈理论（Information Bottleneck Theory）设计。信息瓶颈理论提供了一个框架，用于在保留与目标相关信息的同时，压缩输入数据中的冗余信息。在视觉条件对齐任务中，我们希望：
+为了提高模型效率并增强不同视觉条件之间的交互，我们对CAMPlus模型进行了以下改进：
 
-1. 从源条件（如草图）中提取与目标条件（如深度图）相关的信息
-2. 丢弃源条件中与目标条件无关的信息
-3. 生成与目标条件在分布上一致的新表示
+1. **两阶段编码器架构**：
+   - 前两层为条件特定的独立编码器，专注于提取每种条件的特定特征
+   - 后两层为所有条件共享的编码器，促进特征共享和参数效率
+   - 这种设计在保持条件特异性的同时，显著减少了模型参数量
 
-通过变分信息瓶颈（Variational Information Bottleneck）的实现，我们的模型可以学习到一个压缩但信息丰富的潜在表示，从而实现不同视觉条件之间的有效对齐。
+2. **跨条件注意力机制**：
+   - 实现了跨条件注意力模块，使不同条件的特征能够相互增强
+   - 动态调整特征权重，根据其他条件的信息调整当前条件的特征表示
+   - 增强了模型对多模态输入的理解能力
 
-## 安装指南
+3. **模块化解码器**：
+   - 将解码器功能封装为独立模块，便于模块化设计和代码复用
+   - 保持了与原始解码器相同的功能，确保向后兼容性
 
-### 环境要求
+4. **特征金字塔增强**：
+   - 在共享编码器中集成了特征金字塔网络，增强多尺度特征提取能力
+   - 通过跨尺度特征融合，提高了模型对不同尺度特征的利用效率
 
-- Python 3.8+
-- PyTorch 1.8+
-- CUDA（推荐用于加速训练）
-
-### 安装步骤
-
-1. 克隆仓库：
-
-```bash
-git clone https://github.com/yourusername/CAM_attn.git
-cd CAM_attn
-```
-
-2. 安装依赖：
-
-```bash
-pip install -r requirements.txt
-```
-
-## 使用方法
-
-### 数据准备
-
-数据集应按以下结构组织：
-
-```
-/data/ymx/dataset/imagenet-100/
-├── img_depth/
-│   ├── train/
-│   │   ├── class1/
-│   │   │   ├── img1.png
-│   │   │   ├── img2.png
-│   │   │   └── ...
-│   │   ├── class2/
-│   │   └── ...
-│   └── val/
-│       └── ...
-├── img_canny/
-│   ├── train/
-│   └── val/
-├── img_sketch/
-│   ├── train/
-│   └── val/
-└── ...
-```
-
-注意：不同视觉条件下，对应图片的命名应完全相同，只需更换路径即可实现对应。
-
-### 配置
-
-在`config.json`中设置训练参数：
-
-```json
-{
-    "dataset_path": "/data/ymx/dataset/imagenet-100",
-    "target_condition": "depth",
-    "source_conditions": ["canny", "sketch"],
-    "img_size": 256,
-    "batch_size": 32,
-    "num_workers": 4,
-    "epochs": 100,
-    "lr": 2e-4,
-    "lr_step": 20,
-    "beta": 0.01,
-    "seed": 42,
-    "device": "cuda",
-    "output_dir": "./output",
-    "save_interval": 10
-}
-```
-
-### 训练模型
-
-```bash
-python main.py --mode train --config config.json
-```
-
-训练过程中，模型会定期保存检查点到`output/checkpoints/`目录，并在`output/samples/`目录生成可视化结果。
-
-### 测试模型
-
-```bash
-python main.py --mode test --checkpoint output/checkpoints/best_model.pth --input path/to/input/image.png --output path/to/output/image.png
-```
+这些改进使得模型在保持推理时单编码器输入兼容性的同时，提高了参数效率和特征交互能力。
 
 ## 模型架构
 
-CAM模型采用了UNet架构，结合先进的注意力机制和信息瓶颈理论，由以下组件组成：
+### CAMPlus
 
-1. **UNet编解码器**：
-   - 采用跳跃连接的UNet结构，可配置深度
-   - 下采样路径：逐步减小特征图尺寸，增加通道数
-   - 上采样路径：逐步恢复特征图尺寸，结合跳跃连接保留细节
+CAMPlus是条件对齐模块的增强版本，主要包含以下组件：
 
-2. **信息瓶颈层**：基于变分信息瓶颈理论，提取与目标条件相关的信息
-   - 通过均值和方差编码潜在表示
-   - 使用KL散度损失实现信息瓶颈约束
+1. **两阶段编码器**：
+   - 条件特定编码器：处理不同视觉条件的特定特征
+   - 共享编码器：处理来自不同条件特定编码器的特征，提取共享表示
 
-3. **多种注意力机制**：
-   - CBAM (Convolutional Block Attention Module)：结合通道和空间注意力
-   - 自注意力 (Self-Attention)：捕获长距离依赖关系
-   - 通道注意力 (Channel Attention)：基于SE-Net设计
-   - 空间注意力 (Spatial Attention)：关注图像的空间区域
+2. **VAE瓶颈层**：基于变分自编码器的瓶颈层，增强特征表示并提供正则化
 
-4. **注意力可视化**：提供热力图形式的注意力可视化功能
+3. **跨条件注意力**：使用注意力机制融合不同条件的特征，增强条件间的信息交流
 
-模型通过注意力机制筛选重要信息，减少冗余，符合信息瓶颈理论的核心思想。
+4. **解码器**：将编码器特征解码为输出图像
+
+### 注意力机制
+
+本项目实现了多种注意力机制：
+
+- **CBAM**：结合通道注意力和空间注意力
+- **自注意力**：基于Transformer设计，捕获长距离依赖关系
+- **通道注意力**：基于SE-Net设计，关注通道间的重要性
+- **空间注意力**：关注图像的空间区域
+
+### 信息瓶颈理论
+
+基于信息瓶颈理论，模型通过控制信息流动，保留与目标相关的信息，丢弃无关信息，从而提高生成质量和模型鲁棒性。
+
+## 使用方法
+
+### 配置参数
+
+```python
+config = {
+    'base_channels': 64,  # 基础通道数
+    'depth': 4,            # UNet深度
+    'attention_type': 'cbam',  # 注意力类型：'cbam', 'self', 'channel', 'spatial'
+    'beta': 0.01,          # 信息瓶颈中的权衡参数
+    'source_conditions': ['canny', 'sketch', 'color']  # 源条件类型
+}
+```
+
+### 创建模型
+
+```python
+model = CAMPlus(config)
+```
+
+### 前向传播
+
+```python
+# 准备输入
+source_images = {
+    'canny': canny_image,    # 边缘图
+    'sketch': sketch_image,  # 草图
+    'color': color_image     # 颜色图
+}
+target_img = depth_image    # 目标深度图（可选）
+
+# 前向传播
+outputs = model(source_images, target_img)
+
+# 获取结果
+results = outputs['outputs']  # 每个条件的输出
+```
 
 ## 引用
 
 如果您在研究中使用了本项目，请引用以下论文：
 
 ```
-@article{tishby2000information,
-  title={The information bottleneck method},
-  author={Tishby, Naftali and Pereira, Fernando C and Bialek, William},
-  journal={arXiv preprint physics/0004057},
-  year={2000}
-}
-
-@article{alemi2016deep,
-  title={Deep variational information bottleneck},
-  author={Alemi, Alexander A and Fischer, Ian and Dillon, Joshua V and Murphy, Kevin},
-  journal={arXiv preprint arXiv:1612.00410},
-  year={2016}
+@article{cam_attn,
+  title={Condition Alignment Module with Attention Mechanism for Multi-condition Image Generation},
+  author={Author},
+  journal={Journal},
+  year={2023}
 }
 ```
-
-## 许可证
-
-MIT

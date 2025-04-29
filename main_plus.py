@@ -6,7 +6,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import numpy as np
 
-from model_plus import CAMPlus, train_model_plus, load_model_plus, inference_plus
+from model_plus import CAMPlus
+from trainer_plus import train_model_plus, load_model_plus, inference_plus
 from data_loader_plus import get_multi_condition_loaders
 from utils import seed_everything, tensor_to_image
 

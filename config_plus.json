@@ -20,7 +20,7 @@
     "feature_matching_loss_type": "l1",
     "recon_loss_type": "l1",
     "input_channels": 3,
-    "output_channels": 3,
+    "output_channels": 1,
     "base_channels": 32,
     "depth": 4,
     "attention_type": "cbam"

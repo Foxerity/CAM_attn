@@ -423,7 +423,19 @@ class EncoderSupervisionLoss(nn.Module):
         # 特征匹配损失（如果有编码器特征和目标特征）
         feature_matching_loss = torch.tensor(0.0, device=output.device)
         if 'target_features' in model_outputs and len(encoder_features) > 0 and feature_matching_weight > 0:
-            target_features = model_outputs['target_features']
+            # 获取目标特征
+            if isinstance(model_outputs['target_features'], list):
+                target_features = model_outputs['target_features']
+            else:
+                # 如果target_features不是列表，则创建一个只包含它的列表
+                target_features = [model_outputs['target_features']]
+                
+            # 如果有target_mid_features，将其添加到target_features列表中
+            # 这确保了target特征列表的长度与encoder_features一致
+            if 'target_mid_features' in model_outputs and model_outputs['target_mid_features'] is not None:
+                target_mid_features = model_outputs['target_mid_features']
+                # 合并target_mid_features和target_features，确保特征列表完整
+                target_features = target_mid_features + target_features
             
             # 为不同层的特征分配不同的权重，深层特征权重更高
             # 使用指数增长的权重，使深层特征的权重显著高于浅层特征
