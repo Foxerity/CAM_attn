@@ -157,10 +157,6 @@ class SharedEncoder(nn.Module):
             features.append(x)
             skips.append(x)
         
-        # 应用跨条件注意力融合（如果提供了其他条件的特征）
-        # if condition_name is not None and all_condition_features is not None:
-        #     x = self.cross_condition_attention(x, condition_name, all_condition_features)
-        
         # 应用特征金字塔网络增强多尺度特征
         fpn_features = self.fpn(features)
         fused_features = self.cross_fusion(fpn_features)

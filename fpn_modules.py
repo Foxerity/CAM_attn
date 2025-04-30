@@ -67,27 +67,31 @@ class CrossScaleFeatureFusion(nn.Module):
     融合特征金字塔中不同尺度的特征，生成更丰富的表示。
     使用自适应权重机制动态调整不同尺度特征的重要性。
     """
-    def __init__(self, channels, num_scales, attention_type='cbam'):
+    def __init__(self, channels, num_scales, attention_type='cbam', mode='none'):
         super(CrossScaleFeatureFusion, self).__init__()
-        
-        # 特征转换层
-        self.transforms = nn.ModuleList()
-        for _ in range(num_scales):
-            self.transforms.append(ConvBlock(channels, channels))
-        
-        # 自适应权重生成
-        self.weight_generator = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(channels * num_scales, num_scales, kernel_size=1),
-            nn.Softmax(dim=1)
-        )
-        
-        # 融合后的特征增强
-        self.fusion_enhance = nn.Sequential(
-            ConvBlock(channels, channels),
-            AttentionModule(channels, attention_type)
-        )
-    
+
+        self.mode = mode
+        if mode != 'none':
+            # 特征转换层
+            self.transforms = nn.ModuleList()
+            for _ in range(num_scales):
+                self.transforms.append(ConvBlock(channels, channels))
+
+            # 自适应权重生成
+            self.weight_generator = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(channels * num_scales, num_scales, kernel_size=1),
+                nn.Softmax(dim=1)
+            )
+
+            # 融合后的特征增强
+            self.fusion_enhance = nn.Sequential(
+                ConvBlock(channels, channels),
+                AttentionModule(channels, attention_type)
+            )
+        else:
+            self.weight_generator = ConvBlock(channels * num_scales, channels)
+
     def forward(self, features):
         """
         Args:
@@ -103,27 +107,36 @@ class CrossScaleFeatureFusion(nn.Module):
         
         for i, feature in enumerate(features):
             # 应用特征转换
-            transformed = self.transforms[i](feature)
+            if self.mode != 'none':
+                transformed = self.transforms[i](feature)
+            else:
+                transformed = feature
             # 调整空间尺寸
             if transformed.shape[2:] != target_size:
                 transformed = F.interpolate(transformed, size=target_size, mode='bilinear', align_corners=False)
             aligned_features.append(transformed)
         
         # 计算自适应权重
-        concat_features = torch.cat(aligned_features, dim=1)
-        weights = self.weight_generator(concat_features)
+        if self.mode != 'none':
+            concat_features = torch.cat(aligned_features, dim=1)
+            weights = self.weight_generator(concat_features)
+
+            # 应用权重并融合
+            weighted_features = []
+            for i, feature in enumerate(aligned_features):
+                # 提取对应的权重并扩展维度以匹配特征图
+                weight = weights[:, i:i+1].expand_as(feature)
+                weighted_features.append(feature * weight)
         
-        # 应用权重并融合
-        weighted_features = []
-        for i, feature in enumerate(aligned_features):
-            # 提取对应的权重并扩展维度以匹配特征图
-            weight = weights[:, i:i+1].expand_as(feature)
-            weighted_features.append(feature * weight)
-        
-        # 求和融合
-        fused = sum(weighted_features)
-        
-        # 增强融合特征
-        enhanced = self.fusion_enhance(fused)
-        
+            # 求和融合
+            fused = sum(weighted_features)
+            # 增强融合特征
+            enhanced = self.fusion_enhance(fused)
+        else:
+            fused = sum(aligned_features) / len(aligned_features)
+            concat_features = torch.cat(aligned_features, dim=1)
+            weight = self.weight_generator(concat_features)
+            enhanced = fused + weight
         return enhanced
+
+        
