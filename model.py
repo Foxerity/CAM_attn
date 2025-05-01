@@ -15,7 +15,10 @@ class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, num_groups=4):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-        self.bn = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True)
+        if num_groups > 0:
+            self.bn = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True)
+        else:
+            self.bn = nn.BatchNorm2d(out_channels)
         self.relu = nn.LeakyReLU(inplace=True)
         
     def forward(self, x):

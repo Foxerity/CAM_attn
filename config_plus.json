@@ -13,7 +13,7 @@
     "device": "cuda",
     "output_dir": "./output_plus",
     "save_interval": 10,
-    "sample_interval": 1,
+    "sample_interval": 5,
     "contrastive_weight": 0.1,
     "feature_matching_weight": 0.1,
     "temperature": 0.5,

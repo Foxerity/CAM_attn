@@ -114,7 +114,8 @@ class SharedEncoder(nn.Module):
         )
         
         # 最终特征调整
-        self.final_adjust = nn.Conv2d(base_channels * 4, in_channels, kernel_size=1)
+        # self.final_adjust = nn.Conv2d(base_channels * 4, in_channels, kernel_size=1)
+        self.final_adjust = ConvBlock(base_channels * 4, in_channels, kernel_size=1, padding=0, num_groups=0)
         
         # 输出通道数
         self.out_channels = in_channels
