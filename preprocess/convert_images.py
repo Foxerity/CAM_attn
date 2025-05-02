@@ -5,7 +5,7 @@ from convert_to_grayscale import process_directory
 
 def main():
     parser = argparse.ArgumentParser(description='图像处理和模型训练工具')
-    parser.add_argument('--data_dir', type=str, default=r"B:/datasets/test", help='数据集根目录')
+    parser.add_argument('--data_dir', type=str, default=r"/data/ymx/dataset/imagenet-part", help='数据集根目录')
     parser.add_argument('--convert_only', type=bool, default=True, help='仅执行图像转换，不训练模型')
     parser.add_argument('--conditions', nargs='+', default=['sketch', 'canny', 'depth'], 
                         help='需要转换的条件类型，默认为sketch、canny和depth')

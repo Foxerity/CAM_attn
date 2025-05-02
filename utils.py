@@ -203,7 +203,6 @@ def save_image_grid(images, output_path, nrow=4, padding=2, normalize=True, valu
                 if img.dim() == 3 and img.size(0) == 1:  # 单通道图像 [1, H, W]
                     # 复制单通道到三个通道
                     img = img.repeat(3, 1, 1)  # 变为 [3, H, W]
-                    print(f"将图像 '{label}' 从单通道转换为三通道")
                 
                 tensor_images.append(img)
             except Exception as e:

@@ -58,7 +58,7 @@ class MultiConditionDataset(Dataset):
                     for condition in source_conditions:
                         condition_path = os.path.join(
                             root_dir, 
-                            f"img_{condition}", 
+                            f"img_{condition}",
                             split, 
                             class_name, 
                             img_name
@@ -90,7 +90,7 @@ class MultiConditionDataset(Dataset):
         for condition in self.source_conditions:
             source_path = os.path.join(
                 self.root_dir, 
-                f"img_{condition}", 
+                f"img_{condition}",
                 self.split, 
                 class_name, 
                 img_name
@@ -186,60 +186,6 @@ def get_multi_condition_loaders(config):
         pin_memory=True,
         prefetch_factor=4,
         persistent_workers=True,
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'],
-        shuffle=False,
-        num_workers=config['num_workers'],
-        pin_memory=True
-    )
-    
-    return train_loader, val_loader
-
-
-def get_data_loaders(config):
-    """创建数据加载器
-    
-    Args:
-        config (dict): 配置字典，包含数据集路径、批量大小等参数
-        
-    Returns:
-        tuple: (train_loader, val_loader)
-    """
-    # 定义图像转换
-    transform = transforms.Compose([
-        transforms.Resize((config['img_size'], config['img_size'])),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
-    
-    # 创建训练集
-    train_dataset = ConditionAlignmentDataset(
-        root_dir=config['dataset_path'],
-        target_condition=config['target_condition'],
-        source_conditions=config['source_conditions'],
-        split='train',
-        transform=transform
-    )
-    
-    # 创建验证集
-    val_dataset = ConditionAlignmentDataset(
-        root_dir=config['dataset_path'],
-        target_condition=config['target_condition'],
-        source_conditions=config['source_conditions'],
-        split='val',
-        transform=transform
-    )
-    
-    # 创建数据加载器
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],
-        shuffle=True,
-        num_workers=config['num_workers'],
-        pin_memory=True
     )
     
     val_loader = DataLoader(

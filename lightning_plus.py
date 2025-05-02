@@ -1,18 +1,17 @@
 import os
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
 import pytorch_lightning as pl
+
 from pytorch_lightning.cli import LightningCLI
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
 from torch.optim.lr_scheduler import StepLR
 from torchvision import transforms
-from PIL import Image
-import numpy as np
+
 
 from model_plus import CAMPlus
-from data_loader_plus import get_multi_condition_loaders, MultiConditionDataset
+from data_loader_plus import MultiConditionDataset
 from losses import ReconstructionLoss, FeatureMatchingLoss, ContrastiveLoss
 from utils import save_image_grid, compute_psnr, compute_ssim
 
@@ -26,6 +25,12 @@ class CAMPlusLightningModule(pl.LightningModule):
         super(CAMPlusLightningModule, self).__init__()
         self.save_hyperparameters(config)
         self.config = config
+
+        self.conditions = list(config['source_conditions'])
+
+        self.kl_min = config.get('beta', 0.01)
+        self.kl_max = self.kl_min * 10
+        self.kl_warmup_epochs = config.get('beta_warmup_epochs', 10)
         
         # 创建模型
         self.model = CAMPlus(config)
@@ -97,7 +102,15 @@ class CAMPlusLightningModule(pl.LightningModule):
             
             # 条件权重
             feature_matching_weight = self.config.get('feature_matching_weight', 0.1)
-            kl_weight = self.config.get('beta', 0.01)
+            # kl_weight = self.config.get('beta', 0.01)
+            epoch = float(self.current_epoch)
+            if epoch < self.kl_warmup_epochs:
+                # 线性从 min→max
+                kl_weight = self.kl_min + (self.kl_max - self.kl_min) * (epoch / self.kl_warmup_epochs)
+            else:
+                # 达到 n epoch 后就保持最大值
+                kl_weight = self.kl_max
+            self.log('kl_weight', kl_weight, prog_bar=True)
             
             # 计算当前条件的总损失
             condition_loss = (
@@ -111,85 +124,109 @@ class CAMPlusLightningModule(pl.LightningModule):
             total_kl_loss += kl_loss
             
             # 记录每个条件的损失
-            self.log(f'train/{condition}_loss', condition_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f'train/{condition}_loss', condition_loss, on_epoch=True, prog_bar=False, sync_dist=True)
         
         # 计算总损失
         total_loss = sum(condition_losses.values())
-        
+
         # 记录损失
-        self.log('train/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log('train/recon_loss', total_recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log('train/kl_loss', total_kl_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log('train/feature_matching_loss', total_feature_matching_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('train/loss', total_loss, on_step=True, prog_bar=True, sync_dist=True)
+        self.log('recon', total_recon_loss, on_step=True, prog_bar=True, sync_dist=True)
+        self.log('kl', total_kl_loss, on_step=True, prog_bar=True, sync_dist=False)
+        self.log('feature', total_feature_matching_loss, on_step=True, prog_bar=True, sync_dist=True)
         
         return total_loss
     
     def validation_step(self, batch, batch_idx):
-        """验证步骤
-        
-        Args:
-            batch: 批次数据
-            batch_idx: 批次索引
-            
-        Returns:
-            损失值
         """
-        # 获取数据
+        验证一步：计算各 condition 的 loss、PSNR、SSIM，并在 step 层面 log，
+        设置 on_epoch=True + sync_dist=True，让 Lightning 汇总到 epoch 结束后。
+        """
         source_images = batch['source_images']
-        target_img = batch['target_img']
-        
-        # 前向传播
-        outputs = self(source_images)
-        output_imgs = outputs['outputs']
-        mus = outputs['mus']
-        logvars = outputs['logvars']
-        
-        # 计算每个条件的损失和评估指标
-        batch_loss = 0
-        total_recon_loss = 0
-        total_kl_loss = 0
-        batch_psnr = 0
-        batch_ssim = 0
-        
-        for condition, output_img in output_imgs.items():
-            # 计算损失
-            recon_loss = self.recon_loss_fn(output_img, target_img)
-            kl_loss = self.model.kl_divergence_loss(mus[condition], logvars[condition])
-            
-            condition_weight = self.config.get(f'{condition}_weight', 1.0)
-            kl_weight = self.config.get('beta', 0.01)
-            
-            condition_loss = (recon_loss + kl_weight * kl_loss) * condition_weight
-            batch_loss += condition_loss
-            
-            # 累计重建损失和KL损失
-            total_recon_loss += recon_loss * condition_weight
-            total_kl_loss += kl_loss * condition_weight
-            
-            # 计算评估指标
-            psnr = compute_psnr(output_img, target_img)
-            ssim = compute_ssim(output_img, target_img)
-            
-            # 记录每个条件的评估指标
-            self.log(f'val/{condition}_psnr', psnr, on_epoch=True, prog_bar=False, sync_dist=True)
-            self.log(f'val/{condition}_ssim', ssim, on_epoch=True, prog_bar=False, sync_dist=True)
-            
-            # 累计PSNR和SSIM
-            batch_psnr += psnr / len(output_imgs)
-            batch_ssim += ssim / len(output_imgs)
-        
-        # 记录损失和评估指标
-        self.log('val/loss', batch_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log('val/recon_loss', total_recon_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log('val/kl_loss', total_kl_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log('val/psnr', batch_psnr, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log('val/ssim', batch_ssim, on_epoch=True, prog_bar=True, sync_dist=True)
-        
-        # 保存生成的图像样本（仅在第一个进程上执行）
-        if batch_idx == 0 and self.global_rank == 0:
-            self._log_images(source_images, target_img, output_imgs)
-        
-        return batch_loss
+        target_img    = batch['target_img']
+
+        # 前向
+        outs   = self(source_images)
+        outputs = outs['outputs']    # dict: condition -> generated image
+        mus     = outs['mus']
+        logvars = outs['logvars']
+
+        batch_loss      = 0.0
+        total_recon_loss = 0.0
+        total_kl_loss    = 0.0
+
+        psnr_vals = []
+        ssim_vals = []
+
+
+        # 对每个 condition 分别计算
+        for cond, out_img in outputs.items():
+            # 重建 + KL loss
+            recon = self.recon_loss_fn(out_img, target_img)
+            kl    = self.model.kl_divergence_loss(mus[cond], logvars[cond])
+            w_cond = self.config.get(f'{cond}_weight', 1.0)
+            w_kl   = self.config.get('beta', 0.01)
+
+            cond_loss = (recon + w_kl * kl) * w_cond
+            batch_loss      += cond_loss
+            total_recon_loss += recon * w_cond
+            total_kl_loss    += kl    * w_cond
+
+            # 评估指标
+            psnr = compute_psnr(out_img, target_img)
+            ssim = compute_ssim(out_img, target_img)
+
+            psnr_vals.append(psnr)
+            ssim_vals.append(ssim)
+
+            # Per‐condition log，on_epoch + sync_dist
+            self.log(f'val/{cond}_psnr', psnr,
+                     on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f'val/{cond}_ssim', ssim,
+                     on_epoch=True, prog_bar=False, sync_dist=True)
+
+        # 全局 loss 和两项子项
+        self.log('v/loss', batch_loss,
+                 on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('v/recon', total_recon_loss,
+                 on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('v/kl',    total_kl_loss,
+                 on_epoch=True, prog_bar=True, sync_dist=True)
+
+        # 计算所有 condition 平均 PSNR/SSIM 并 log
+        batch_psnr = sum(psnr_vals) / len(psnr_vals)
+        batch_ssim = sum(ssim_vals) / len(ssim_vals)
+        self.log('psnr', batch_psnr,
+                 on_epoch=True, sync_dist=True)
+        self.log('ssim', batch_ssim,
+                 on_epoch=True, sync_dist=True)
+
+        # 可选：第一个 batch 打图
+        if batch_idx == 0 and self.trainer.is_global_zero:
+            self._log_images(source_images, target_img, outputs)
+
+    def on_validation_epoch_end(self) -> None:
+        # 只在 global zero （rank0） 打印，避免多卡重复输出
+        if not self.trainer.is_global_zero:
+            return
+
+        metrics = self.trainer.callback_metrics
+        # 整体指标
+        loss = metrics.get('v/loss_epoch') or metrics.get('v/loss')
+        recon = metrics.get('v/recon_epoch') or metrics.get('v/recon')
+        kl = metrics.get('v/kl_epoch') or metrics.get('v/kl')
+        psnr = metrics.get('psnr_epoch') or metrics.get('psnr')
+        ssim = metrics.get('ssim_epoch') or metrics.get('ssim')
+
+        print(f"\n=== Epoch {self.current_epoch} Summary ===")
+        print(f"  loss:  {loss:.2f}, recon: {recon:.2f}, kl: {kl:.2f}")
+        print(f"  psnr:  {psnr:.2f}, ssim: {ssim:.2f}")
+
+        # 各 condition 的 psnr/ssim
+        for cond in self.conditions:
+            p = metrics.get(f'val/{cond}_psnr_epoch') or metrics.get(f'val/{cond}_psnr')
+            s = metrics.get(f'val/{cond}_ssim_epoch') or metrics.get(f'val/{cond}_ssim')
+            print(f"  [{cond}]  PSNR: {p:.2f}, SSIM: {s:.2f}")
     
     def _log_images(self, source_images, target_img, output_imgs):
         """记录图像样本
@@ -262,13 +299,13 @@ class CAMPlusDataModule(pl.LightningDataModule):
             stage: 'fit'或'test'
         """
         # 为RGB和灰度图像定义不同的转换
-        self.transform_rgb = transforms.Compose([
+        transform_rgb = transforms.Compose([
             transforms.Resize((self.img_size, self.img_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
-        
-        self.transform_gray = transforms.Compose([
+
+        transform_gray = transforms.Compose([
             transforms.Resize((self.img_size, self.img_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5], std=[0.5])
@@ -282,6 +319,9 @@ class CAMPlusDataModule(pl.LightningDataModule):
                 source_conditions=self.source_conditions,
                 split='train'
             )
+            # 设置不同类型的转换
+            self.train_dataset.transform_rgb = transform_rgb
+            self.train_dataset.transform_gray = transform_gray
             
             self.val_dataset = MultiConditionDataset(
                 root_dir=self.dataset_path,
@@ -289,6 +329,9 @@ class CAMPlusDataModule(pl.LightningDataModule):
                 source_conditions=self.source_conditions,
                 split='val'
             )
+
+            self.val_dataset.transform_rgb = transform_rgb
+            self.val_dataset.transform_gray = transform_gray
     
     def train_dataloader(self):
         """获取训练数据加载器
@@ -319,55 +362,39 @@ class CAMPlusDataModule(pl.LightningDataModule):
             pin_memory=True,
             collate_fn=self._collate_fn
         )
-    
+
     def _collate_fn(self, batch):
         """自定义批次收集函数
-        
+
         处理不同条件的图像，并将它们组织成字典形式
-        
+
         Args:
             batch: 批次数据列表
-            
+
         Returns:
             处理后的批次数据
         """
         source_images = {condition: [] for condition in self.source_conditions}
         target_imgs = []
-        
+
         for item in batch:
             # 收集所有源条件图像
             for condition in self.source_conditions:
                 # 直接从source_images字典中获取对应条件的图像
                 source_images[condition].append(item['source_images'][condition])
-            
-            # 收集目标图像并确保是Tensor类型
-            if isinstance(item['target_img'], Image.Image):
-                # 如果是PIL图像，应用灰度转换
-                if hasattr(self, 'transform_gray'):
-                    target_img = self.transform_gray(item['target_img'])
-                else:
-                    # 如果没有特定转换，使用基本转换
-                    transform = transforms.Compose([
-                        transforms.Resize((self.config['img_size'], self.config['img_size'])),
-                        transforms.ToTensor(),
-                        transforms.Normalize(mean=[0.5], std=[0.5])
-                    ])
-                    target_img = transform(item['target_img'])
-            else:
-                # 已经是Tensor，直接使用
-                target_img = item['target_img']
-                
-            target_imgs.append(target_img)
-        
+
+            # 收集目标图像
+            target_imgs.append(item['target_img'])
+
         # 将列表转换为张量
         result = {
             'source_images': {},
             'target_img': torch.stack(target_imgs)
         }
-        
+
         for condition in self.source_conditions:
             result['source_images'][condition] = torch.stack(source_images[condition])
-        
+
         return result
 
 
@@ -391,11 +418,12 @@ def train_with_lightning(config):
     # 创建回调
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir,
-        filename='cam_plus-{epoch:02d}-{val/loss:.4f}',
+        filename='{epoch:02d}-{v/loss:.4f}',
         save_top_k=3,
-        verbose=True,
-        monitor='val/loss',
-        mode='min'
+        verbose=False,
+        monitor='v/loss',
+        mode='min',
+        auto_insert_metric_name=False,
     )
     
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
@@ -434,7 +462,7 @@ def train_with_lightning(config):
         deterministic=False,  # 允许非确定性优化以提高性能
         accumulate_grad_batches=config.get('accumulate_grad_batches', 1),
         gradient_clip_val=config.get('gradient_clip_val', None),
-        sync_batchnorm=config.get('sync_batchnorm', False)
+        sync_batchnorm=config.get('sync_batchnorm', True),
     )
     
     # 训练模型

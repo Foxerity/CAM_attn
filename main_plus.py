@@ -1,6 +1,5 @@
 import os
 import argparse
-import torch
 import json
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -38,48 +37,9 @@ def load_config(config_path):
     Returns:
         配置字典
     """
-    if not os.path.exists(config_path):
-        # 默认配置
-        config = {
-            'dataset_path': r"B:\datasets\test",  # 数据集路径
-            'target_condition': 'depth',  # 目标条件
-            'source_conditions': ['canny', 'sketch', 'color'],  # 源条件
-            'img_size': 256,  # 图像大小
-            'batch_size': 16,  # 批量大小
-            'num_workers': 4,  # 数据加载线程数
-            'epochs': 100,  # 训练轮数
-            'lr': 2e-4,  # 学习率
-            'lr_step': 20,  # 学习率衰减步长
-            'beta': 0.01,  # 信息瓶颈权衡参数
-            'seed': 42,  # 随机种子
-            'device': 'cuda' if torch.cuda.is_available() else 'cpu',  # 设备
-            'output_dir': './output_plus',  # 输出目录
-            'save_interval': 10,  # 保存间隔
-            'sample_interval': 5,  # 样本保存间隔
-            'contrastive_weight': 0.1,  # 对比学习损失权重
-            'feature_matching_weight': 0.1,  # 特征匹配损失权重
-            'temperature': 0.5,  # 对比学习温度参数
-            'feature_matching_loss_type': 'l1',  # 特征匹配损失类型
-            'recon_loss_type': 'l1',  # 重建损失类型
-            'input_channels': 3,  # 输入通道数
-            'output_channels': 3,  # 输出通道数
-            'base_channels': 64,  # 基础通道数
-            'depth': 4,  # UNet深度
-            'attention_type': 'cbam'  # 注意力类型
-        }
-        
-        # 保存默认配置
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=4)
-        
-        print(f"创建默认配置文件: {config_path}")
-    else:
-        # 加载配置
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-    
-    # 确保设备正确设置
-    config['device'] = torch.device(config['device'])
+    # 加载配置
+    with open(config_path, 'r') as f:
+        config = json.load(f)
     
     return config
 
@@ -165,6 +125,7 @@ def batch_process(checkpoint_path, source_dir, target_dir, output_dir, config):
         output_dir: 输出目录
         config: 配置参数
     """
+    import torch
     from tqdm import tqdm
     from utils import compute_psnr, compute_ssim
     

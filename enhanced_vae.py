@@ -81,12 +81,6 @@ class EnhancedVAEBottleneck(nn.Module):
         enhanced_z = self.decoder(z)
         
         return enhanced_z, mu, logvar
-    
-    def kl_divergence_loss(self, mu, logvar):
-        """计算KL散度损失"""
-        # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        return self.beta * kl_loss
 
 
 class VAEFeatureFusion(nn.Module):

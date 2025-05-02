@@ -398,8 +398,17 @@ class CAMPlus(nn.Module):
             'target_features': target_features,  # 目标特征（已经过shared_encoder处理）
         }
 
-    def kl_divergence_loss(self, mu, logvar):
-        """计算KL散度损失，用于VAE瓶颈约束"""
-        # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        return kl_loss
+    def kl_divergence_loss(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+        """
+        计算 VAE 的 KL 散度（batch-mean），并强制 FP32 以提高数值稳定性。
+        公式： 0.5 * E_batch [sum_dim (μ^2 + σ^2 - 1 - log σ^2)]
+        """
+        # 禁用 AMP，让 exp/log 在 FP32 下运行
+        with torch.cuda.amp.autocast(enabled=False):
+            logvar = torch.clamp(logvar, -10.0, 10.0)
+            # 计算每个样本的KL损失
+            batch_size = mu.size(0)
+            kl_terms = 1 + logvar - mu.pow(2) - logvar.exp()
+            kl_loss = -0.5 * torch.sum(kl_terms) / batch_size  # 除以批次大小进行归一化
+            return kl_loss
+
