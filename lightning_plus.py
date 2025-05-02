@@ -337,7 +337,8 @@ class CAMPlusDataModule(pl.LightningDataModule):
         for item in batch:
             # 收集所有源条件图像
             for condition in self.source_conditions:
-                source_images[condition].append(item[f'{condition}_img'])
+                # 直接从source_images字典中获取对应条件的图像
+                source_images[condition].append(item['source_images'][condition])
             
             # 收集目标图像
             target_imgs.append(item['target_img'])
