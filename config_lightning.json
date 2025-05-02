@@ -31,5 +31,6 @@
     "precision": 16,
     "strategy": "ddp",
     "sync_batchnorm": true,
-    "find_unused_parameters": false
+    "find_unused_parameters": false,
+    "device_ids": [4, 5, 6, 7]
 }

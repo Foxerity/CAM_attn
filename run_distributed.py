@@ -16,6 +16,8 @@ def parse_args():
                         help='节点数量')
     parser.add_argument('--gpus_per_node', type=int, default=torch.cuda.device_count(),
                         help='每个节点的GPU数量')
+    parser.add_argument('--device_ids', type=str, default=None,
+                        help='指定要使用的GPU设备ID列表，例如"4,5,6,7"表示使用ID为4,5,6,7的GPU')
     parser.add_argument('--master_addr', type=str, default='localhost',
                         help='主节点地址')
     parser.add_argument('--master_port', type=str, default='12355',
@@ -34,6 +36,21 @@ def main():
     with open(args.config, 'r', encoding='utf-8') as f:
         config = json.load(f)
     
+    # 处理device_ids参数
+    device_ids = None
+    if args.device_ids:
+        # 解析设备ID列表
+        device_ids = [int(x.strip()) for x in args.device_ids.split(',')]
+        # 更新配置
+        config['device_ids'] = device_ids
+        # 保存更新后的配置
+        with open(args.config, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        
+        # 如果指定了device_ids，则更新gpus_per_node
+        if args.gpus_per_node == torch.cuda.device_count():
+            args.gpus_per_node = len(device_ids)
+    
     # 检测操作系统
     is_windows = platform.system() == 'Windows'
     
@@ -42,15 +59,21 @@ def main():
     
     # 如果是Windows且没有明确要求使用torchrun，则使用直接调用方式
     if is_windows and not args.use_torchrun:
-        print(f"在Windows环境下使用直接调用方式启动训练，使用 {args.gpus_per_node} 个GPU...")
+        if device_ids:
+            print(f"在Windows环境下使用直接调用方式启动训练，使用GPU: {args.device_ids}")
+        else:
+            print(f"在Windows环境下使用直接调用方式启动训练，使用 {args.gpus_per_node} 个GPU...")
         
         # 构建命令
         cmd = [
             sys.executable,
             'lightning_plus.py',
-            f'--config={args.config}',
-            f'--gpus={args.gpus_per_node}'
+            f'--config={args.config}'
         ]
+        
+        # 如果没有指定device_ids，则使用gpus参数
+        if not device_ids:
+            cmd.append(f'--gpus={args.gpus_per_node}')
         
         print(f"命令: {' '.join(cmd)}")
         
@@ -66,6 +89,10 @@ def main():
         env['MASTER_ADDR'] = args.master_addr
         env['MASTER_PORT'] = args.master_port
         
+        # 如果指定了device_ids，设置CUDA_VISIBLE_DEVICES环境变量
+        if device_ids:
+            env['CUDA_VISIBLE_DEVICES'] = args.device_ids
+        
         # 构建命令
         cmd = [
             'torchrun',
@@ -77,7 +104,11 @@ def main():
             f'--config={args.config}'
         ]
         
-        print(f"启动分布式训练，使用 {world_size} 个GPU...")
+        if device_ids:
+            print(f"启动分布式训练，使用GPU: {args.device_ids}")
+        else:
+            print(f"启动分布式训练，使用 {world_size} 个GPU...")
+        
         print(f"命令: {' '.join(cmd)}")
         
         # 执行命令

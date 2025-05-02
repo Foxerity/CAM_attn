@@ -386,11 +386,16 @@ def train_with_lightning(config):
     # 创建日志记录器
     logger = TensorBoardLogger(save_dir=output_dir, name='lightning_logs')
     
-    # 确定使用的GPU数量
-    if 'gpus' in config:
+    # 确定使用的GPU设备
+    if 'device_ids' in config:
+        # 使用指定的GPU设备ID列表
+        devices = config['device_ids']
+    elif 'gpus' in config:
+        # 使用指定数量的GPU（从0开始）
         devices = config['gpus']
     else:
-        devices = -1  # 使用所有可用的GPU
+        # 使用所有可用的GPU
+        devices = -1
     
     # 确定使用的策略
     import platform

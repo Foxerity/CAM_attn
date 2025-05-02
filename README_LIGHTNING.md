@@ -24,6 +24,22 @@ python run_distributed.py --config config_lightning.json --gpus_per_node 4
 
 其中，`--gpus_per_node`参数指定每个节点使用的GPU数量，默认使用所有可用的GPU。
 
+### 指定特定GPU进行训练
+
+如果您有多个GPU，但只想使用其中的特定几个（例如ID为4,5,6,7的GPU），可以使用以下命令：
+
+```bash
+python run_distributed.py --config config_lightning.json --device_ids="4,5,6,7"
+```
+
+您也可以在配置文件中指定device_ids参数：
+
+```json
+"device_ids": [4, 5, 6, 7]
+```
+
+这对于在有多个任务共享同一台服务器的情况下特别有用，可以避免占用其他用户正在使用的GPU。
+
 ## 多节点训练
 
 对于多节点训练，需要在每个节点上运行以下命令：
