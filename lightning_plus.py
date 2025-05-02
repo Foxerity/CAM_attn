@@ -340,8 +340,24 @@ class CAMPlusDataModule(pl.LightningDataModule):
                 # 直接从source_images字典中获取对应条件的图像
                 source_images[condition].append(item['source_images'][condition])
             
-            # 收集目标图像
-            target_imgs.append(item['target_img'])
+            # 收集目标图像并确保是Tensor类型
+            if isinstance(item['target_img'], Image.Image):
+                # 如果是PIL图像，应用灰度转换
+                if hasattr(self, 'transform_gray'):
+                    target_img = self.transform_gray(item['target_img'])
+                else:
+                    # 如果没有特定转换，使用基本转换
+                    transform = transforms.Compose([
+                        transforms.Resize((self.config['img_size'], self.config['img_size'])),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=[0.5], std=[0.5])
+                    ])
+                    target_img = transform(item['target_img'])
+            else:
+                # 已经是Tensor，直接使用
+                target_img = item['target_img']
+                
+            target_imgs.append(target_img)
         
         # 将列表转换为张量
         result = {
