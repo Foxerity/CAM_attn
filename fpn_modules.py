@@ -17,16 +17,14 @@ class FeaturePyramidNetwork(nn.Module):
         # 横向连接层 (lateral connections)
         self.lateral_convs = nn.ModuleList()
         for in_channels in in_channels_list:
-            self.lateral_convs.append(nn.Conv2d(in_channels, out_channels, kernel_size=1))
+            self.lateral_convs.append(ConvBlock(in_channels, out_channels, kernel_size=1, padding=0))
         
         # 特征融合后的3x3卷积，用于消除上采样的混叠效应
         self.smooth_convs = nn.ModuleList()
         for _ in range(len(in_channels_list)):
-            self.smooth_convs.append(nn.Sequential(
-                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-                nn.BatchNorm2d(out_channels),
-                nn.ReLU(inplace=True)
-            ))
+            self.smooth_convs.append(
+                ConvBlock(out_channels, out_channels, kernel_size=3, padding=1)
+            )
         
         # 注意力模块，用于增强特征
         self.attention_modules = nn.ModuleList()

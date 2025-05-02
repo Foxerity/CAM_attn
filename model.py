@@ -1,25 +1,21 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 import numpy as np
 import os
-import time
 import matplotlib.pyplot as plt
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
 
 
 class ConvBlock(nn.Module):
     """基本卷积块，包含卷积、批归一化和激活函数"""
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, num_groups=4):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, num_groups=0):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
         if num_groups > 0:
             self.bn = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True)
         else:
             self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.LeakyReLU(inplace=True)
+        self.relu = nn.SiLU(inplace=True)
         
     def forward(self, x):
         return self.relu(self.bn(self.conv(x)))
@@ -267,97 +263,6 @@ class UNetBlock(nn.Module):
         return self.attention.get_attention_maps()
 
 
-class CAM(nn.Module):
-    """条件对齐模块 (Condition Alignment Module)
-    
-    基于信息瓶颈理论设计，将不同视觉条件对齐到目标条件
-    使用UNet架构和注意力机制增强特征提取和生成能力
-    """
-    def __init__(self, config):
-        super(CAM, self).__init__()
-        self.config = config
-        
-        # 获取配置参数
-        input_channels = config.get('input_channels', 3)
-        output_channels = config.get('output_channels', 3)
-        base_channels = config.get('base_channels', 64)
-        depth = config.get('depth', 4)  # UNet深度
-        attention_type = config.get('attention_type', 'cbam')
-        beta = config.get('beta', 0.01)
-        
-        # 初始卷积层
-        self.inc = ConvBlock(input_channels, base_channels)
-        
-        # 下采样路径
-        self.down_blocks = nn.ModuleList()
-        in_channels = base_channels
-        for i in range(depth):
-            out_channels = in_channels * 2
-            self.down_blocks.append(UNetBlock(in_channels, out_channels, attention_type, down=True))
-            in_channels = out_channels
-        
-        # 信息瓶颈层
-        self.bottleneck = InformationBottleneckLayer(in_channels, in_channels, beta=beta, attention_type=attention_type)
-        
-        # 上采样路径
-        self.up_blocks = nn.ModuleList()
-        for i in range(depth):
-            out_channels = in_channels // 2
-            self.up_blocks.append(UNetBlock(in_channels, out_channels, attention_type, down=False))
-            in_channels = out_channels
-        
-        # 输出层
-        self.outc = nn.Sequential(
-            nn.Conv2d(base_channels, output_channels, kernel_size=3, padding=1),
-            nn.Tanh()  # 输出范围为[-1, 1]
-        )
-        
-    def forward(self, source_img):
-        # 初始特征
-        x = self.inc(source_img)
-        
-        # 下采样路径，保存跳跃连接
-        skips = [x]
-        for i, block in enumerate(self.down_blocks):
-            x = block(x)
-            if i < len(self.down_blocks) - 1:  # 最后一层不作为跳跃连接
-                skips.append(x)
-        
-        # 信息瓶颈
-        z, mu, logvar = self.bottleneck(x)
-        x = z
-        
-        # 上采样路径，使用跳跃连接
-        for i, block in enumerate(self.up_blocks):
-            skip = skips[-(i+1)] if i < len(skips) else None
-            x = block(x, skip)
-        
-        # 输出层
-        output = self.outc(x)
-        
-        return output, mu, logvar
-    
-    def kl_divergence_loss(self, mu, logvar):
-        """计算KL散度损失，用于信息瓶颈约束"""
-        # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        return kl_loss
-    
-    def get_attention_maps(self):
-        """获取所有注意力模块的注意力图"""
-        attention_maps = {
-            'bottleneck': self.bottleneck.get_attention_maps()
-        }
-        
-        # 获取下采样路径的注意力图
-        for i, block in enumerate(self.down_blocks):
-            attention_maps[f'down_{i}'] = block.get_attention_maps()
-        
-        # 获取上采样路径的注意力图
-        for i, block in enumerate(self.up_blocks):
-            attention_maps[f'up_{i}'] = block.get_attention_maps()
-        
-        return attention_maps
 
 
 def visualize_attention_maps(attention_maps, epoch, config):
@@ -605,6 +510,3 @@ if __name__ == "__main__":
         'depth': 4,  # UNet深度
         'attention_type': 'cbam',  # 注意力类型: 'cbam', 'self', 'channel', 'spatial'
     }
-    
-    # 训练模型
-    train_model(config)

@@ -24,15 +24,15 @@ class EnhancedVAEBottleneck(nn.Module):
         # 均值和对数方差预测
         self.mu_conv = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(in_channels),
-            nn.LeakyReLU(0.2, inplace=True),
+            # nn.BatchNorm2d(in_channels),
+            nn.SiLU(inplace=True),
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         )
         
         self.logvar_conv = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(in_channels),
-            nn.LeakyReLU(0.2, inplace=True),
+            # nn.BatchNorm2d(in_channels),
+            nn.SiLU(inplace=True),
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         )
         
@@ -42,23 +42,6 @@ class EnhancedVAEBottleneck(nn.Module):
             ResidualBlock(out_channels),
             AttentionModule(out_channels, attention_type)
         )
-        
-        # 特征投影层，用于对比学习
-        self.projection = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, kernel_size=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=1)
-        )
-        
-        # 条件调制层，用于融合条件信息
-        self.condition_modulation = nn.Sequential(
-            nn.Conv2d(out_channels * 2, out_channels, kernel_size=1),
-            nn.Sigmoid()
-        )
-        
-        # 条件特征适配层，确保条件特征通道数匹配
-        self.condition_adapter = nn.Conv2d(in_channels, out_channels, kernel_size=1)
     
     def reparameterize(self, mu, logvar):
         """重参数化技巧，使得反向传播可行"""
@@ -94,27 +77,8 @@ class EnhancedVAEBottleneck(nn.Module):
         # 采样隐变量
         z = self.reparameterize(mu, logvar)
         
-        # 应用条件调制（如果提供了条件）
-        if condition is not None:
-            # 确保条件特征与z具有相同的通道数和空间尺寸
-            condition = self.condition_adapter(condition)
-            
-            # 确保条件特征与z具有相同的空间尺寸
-            if condition.shape[2:] != z.shape[2:]:
-                condition = F.interpolate(condition, size=z.shape[2:], mode='bilinear', align_corners=False)
-            
-            # 拼接并生成调制参数
-            combined = torch.cat([z, condition], dim=1)
-            modulation = self.condition_modulation(combined)
-            
-            # 应用调制
-            z = z * modulation
-        
         # 解码增强
         enhanced_z = self.decoder(z)
-        
-        # 生成投影特征
-        proj_features = self.projection(enhanced_z)
         
         return enhanced_z, mu, logvar
     
