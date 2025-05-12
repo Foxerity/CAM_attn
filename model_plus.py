@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from model import ConvBlock, UNetBlock, AttentionModule
 # 导入新模块
-from enhanced_vae import EnhancedVAEBottleneck
+from enhanced_vae import NVAEBottleneck
 from fpn_modules import FeaturePyramidNetwork, CrossScaleFeatureFusion
 
 
@@ -121,8 +120,6 @@ class SharedEncoder(nn.Module):
         Args:
             x: 条件特定编码器的输出特征
             all_features: 条件特定编码器的所有中间特征
-            condition_name: 当前条件的名称
-            all_condition_features: 所有条件的特征字典
             
         Returns:
             编码器特征和跳跃连接
@@ -223,14 +220,17 @@ class Decoder(nn.Module):
 
     def __init__(self, in_channels, base_channels, depth=4, attention_type='cbam', output_channels=1):
         super(Decoder, self).__init__()
-
         # 上采样路径
         self.up_blocks = nn.ModuleList()
         current_channels = in_channels
 
         for i in range(depth):
             out_channels = current_channels // 2
-            self.up_blocks.append(UNetBlock(current_channels, out_channels, attention_type, down=False))
+            self.up_blocks.append(
+                UNetBlock(
+                    current_channels, out_channels, attention_type,
+                    down=False)
+                                  )
             current_channels = out_channels
 
         # 输出层
@@ -249,7 +249,6 @@ class Decoder(nn.Module):
         Returns:
             解码器输出和中间特征
         """
-
         # 上采样路径
         for i, block in enumerate(self.up_blocks):
             # 获取对应的跳跃连接
@@ -306,8 +305,8 @@ class CAMPlus(nn.Module):
         self.bottlenecks = nn.ModuleDict()
         bottleneck_channels = base_channels * (2 ** depth)
         for condition in self.source_conditions:
-            self.bottlenecks[condition] = EnhancedVAEBottleneck(
-                bottleneck_channels, bottleneck_channels, beta=beta, attention_type=attention_type
+            self.bottlenecks[condition] = NVAEBottleneck(
+                bottleneck_channels, bottleneck_channels
             )
 
         # 共享解码器
@@ -366,13 +365,18 @@ class CAMPlus(nn.Module):
         all_results = {}
         all_mus = {}
         all_logvars = {}
-        decoder_features = {}
+        all_log_qk = {}
+        all_total_log_det = {}
+        all_z = {}
+
 
         for condition in shared_outputs.keys():
-            # 通过增强版VAE瓶颈层
-            z, mu, logvar = self.bottlenecks[condition](shared_outputs[condition])
+            z, mu, logvar, log_qk, total_log_det = self.bottlenecks[condition](shared_outputs[condition])
             all_mus[condition] = mu
             all_logvars[condition] = logvar
+            all_log_qk[condition] = log_qk
+            all_total_log_det[condition] = total_log_det
+            all_z[condition] = z
 
             # 使用共享解码器生成输出
             output = self.decoder(z, shared_skips[condition][: -1])
@@ -396,6 +400,9 @@ class CAMPlus(nn.Module):
             'logvars': all_logvars,
             'encoder_features': shared_outputs,  # 编码器输出
             'target_features': target_features,  # 目标特征（已经过shared_encoder处理）
+            'total_log_det': all_total_log_det,
+            'all_log_qk': all_log_qk,
+            'z': all_z
         }
 
     def kl_divergence_loss(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:

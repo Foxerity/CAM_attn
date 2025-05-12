@@ -244,7 +244,7 @@ class UNetBlock(nn.Module):
             )
             
         self.attention = AttentionModule(out_channels, attention_type)
-        
+
     def forward(self, x, skip=None):
         if self.down:
             if x is not None:  # 第一层没有池化
@@ -379,64 +379,6 @@ def visualize_samples(samples, epoch, config):
     plt.tight_layout()
     plt.savefig(os.path.join(config['output_dir'], 'samples', f'epoch_{epoch+1}.png'))
     plt.close()
-    
-    
-
-
-def inference(model, image_path, config):
-    """使用训练好的模型进行推理
-    
-    Args:
-        model: 训练好的CAM模型
-        image_path: 输入图像路径
-        config: 配置参数
-        
-    Returns:
-        生成的目标条件图像
-    """
-    from PIL import Image
-    from torchvision import transforms
-    
-    # 加载和预处理图像
-    transform = transforms.Compose([
-        transforms.Resize((config['img_size'], config['img_size'])),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
-    
-    image = Image.open(image_path).convert('RGB')
-    image = transform(image).unsqueeze(0).to(config['device'])
-    
-    # 推理
-    model.eval()
-    with torch.no_grad():
-        output, _, _ = model(image)
-    
-    # 后处理
-    output = output.squeeze(0).cpu()
-    output = output.permute(1, 2, 0).numpy() * 0.5 + 0.5
-    output = np.clip(output * 255, 0, 255).astype(np.uint8)
-    
-    return Image.fromarray(output)
-
-
-def load_model(checkpoint_path, device):
-    """加载预训练模型
-    
-    Args:
-        checkpoint_path: 检查点路径
-        device: 设备
-        
-    Returns:
-        加载的模型
-    """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    config = checkpoint['config']
-    
-    model = CAM(config).to(device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    
-    return model, config
 
 
 def visualize_attention(model, image_path, output_path, config):
@@ -483,30 +425,3 @@ def visualize_attention(model, image_path, output_path, config):
     visualize_attention_maps(attention_maps, 0, {'output_dir': output_path})
     
     return output
-
-
-if __name__ == "__main__":
-    # 配置参数
-    config = {
-        'dataset_path': r'B:\datasets\test',  # 数据集路径
-        'target_condition': 'depth',  # 目标条件
-        'source_conditions': ['canny', 'sketch'],  # 源条件
-        'img_size': 256,  # 图像大小
-        'batch_size': 32,  # 批量大小
-        'num_workers': 4,  # 数据加载线程数
-        'epochs': 100,  # 训练轮数
-        'lr': 2e-4,  # 学习率
-        'lr_step': 20,  # 学习率衰减步长
-        'beta': 0.01,  # 信息瓶颈权衡参数
-        'seed': 42,  # 随机种子
-        'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),  # 设备
-        'output_dir': './output',  # 输出目录
-        'save_interval': 10,  # 保存间隔
-        
-        # 新增配置参数
-        'input_channels': 3,  # 输入通道数
-        'output_channels': 3,  # 输出通道数
-        'base_channels': 64,  # 基础通道数
-        'depth': 4,  # UNet深度
-        'attention_type': 'cbam',  # 注意力类型: 'cbam', 'self', 'channel', 'spatial'
-    }

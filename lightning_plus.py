@@ -6,13 +6,13 @@ import pytorch_lightning as pl
 from pytorch_lightning.cli import LightningCLI
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import OneCycleLR
 from torchvision import transforms
 
-
+from enhanced_vae import EntropyKLLoss
 from model_plus import CAMPlus
 from data_loader_plus import MultiConditionDataset
-from losses import ReconstructionLoss, FeatureMatchingLoss, ContrastiveLoss
+from losses import ReconstructionLoss, FeatureMatchingLoss
 from utils import save_image_grid, compute_psnr, compute_ssim
 
 
@@ -23,14 +23,20 @@ class CAMPlusLightningModule(pl.LightningModule):
     """
     def __init__(self, config):
         super(CAMPlusLightningModule, self).__init__()
+        self._last_val_batch = None
         self.save_hyperparameters(config)
         self.config = config
 
         self.conditions = list(config['source_conditions'])
 
-        self.kl_min = config.get('beta', 0.01)
-        self.kl_max = self.kl_min * 10
-        self.kl_warmup_epochs = config.get('beta_warmup_epochs', 10)
+        self.KLLoss = EntropyKLLoss()
+
+        self.tag = config.get("tag")
+
+        self.kl_min = 1e-5
+        self.kl_max = config.get('beta', 0.1)                               # config
+        self.kl_warmup_epochs = config.get('beta_warmup_epochs', 20)        # config
+        self.kl_increase_epochs = config.get('kl_increase_epochs', 10)
         
         # 创建模型
         self.model = CAMPlus(config)
@@ -38,7 +44,6 @@ class CAMPlusLightningModule(pl.LightningModule):
         # 定义损失函数
         self.recon_loss_fn = ReconstructionLoss(loss_type=config.get('recon_loss_type', 'l1'))
         self.feature_matching_loss_fn = FeatureMatchingLoss(loss_type=config.get('feature_matching_loss_type', 'l1'))
-        self.contrastive_loss_fn = ContrastiveLoss(temperature=config.get('temperature', 0.5))
         
         # 设置自动优化
         self.automatic_optimization = True
@@ -71,6 +76,8 @@ class CAMPlusLightningModule(pl.LightningModule):
         # 获取数据
         source_images = batch['source_images']  # 字典，键为条件名，值为对应的图像张量
         target_img = batch['target_img']
+
+        epoch = float(self.current_epoch)
         
         # 前向传播
         outputs = self(source_images, target_img)
@@ -78,6 +85,9 @@ class CAMPlusLightningModule(pl.LightningModule):
         output_imgs = outputs['outputs']  # 字典，键为条件名，值为对应的生成图像
         mus = outputs['mus']
         logvars = outputs['logvars']
+        z = outputs['z']
+        total_log_det = outputs['total_log_det']
+        log_qk = outputs['all_log_qk']
         encoder_features = outputs['encoder_features']
         target_features = outputs['target_features']
         
@@ -86,37 +96,52 @@ class CAMPlusLightningModule(pl.LightningModule):
         total_kl_loss = 0
         total_feature_matching_loss = 0
         condition_losses = {}
-        
+
+
         for condition, output_img in output_imgs.items():
             # 1. 重建损失
             recon_loss = self.recon_loss_fn(output_img, target_img)
             
             # 2. KL散度损失
-            kl_loss = self.model.kl_divergence_loss(mus[condition], logvars[condition])
-            
+            # kl_loss = self.model.kl_divergence_loss(mus[condition], logvars[condition])
+
             # 3. 特征匹配损失
             feature_matching_loss = 0
-            if target_features is not None:
-                feature_matching_loss = self.feature_matching_loss_fn(encoder_features[condition], target_features)
-                total_feature_matching_loss += feature_matching_loss * self.config.get(f'{condition}_weight', 1.0)
+            # if target_features is not None:
+                # feature_matching_loss = self.feature_matching_loss_fn(encoder_features[condition], target_features)
+                # total_feature_matching_loss += feature_matching_loss * self.config.get(f'{condition}_weight', 1.0)
             
             # 条件权重
-            feature_matching_weight = self.config.get('feature_matching_weight', 0.1)
+            # feature_matching_weight = self.config.get('feature_matching_weight', 0.1)
             # kl_weight = self.config.get('beta', 0.01)
-            epoch = float(self.current_epoch)
+
+
             if epoch < self.kl_warmup_epochs:
-                # 线性从 min→max
-                kl_weight = self.kl_min + (self.kl_max - self.kl_min) * (epoch / self.kl_warmup_epochs)
+                kl_weight = self.kl_min + (self.kl_max - self.kl_min) * (epoch
+                                                                         / self.kl_warmup_epochs)
             else:
                 # 达到 n epoch 后就保持最大值
                 kl_weight = self.kl_max
             self.log('kl_weight', kl_weight, prog_bar=True)
-            
+
+            kl_loss_outputs = self.KLLoss(z[condition],
+                                  mus[condition],
+                                  logvars[condition],
+                                  log_qk[condition],
+                                  total_log_det[condition]
+                                  )
+            kl_loss = kl_loss_outputs["loss"]
+
+            # kl_loss = self.KLLoss(total_log_det[condition])
             # 计算当前条件的总损失
+            # condition_loss = (
+            #     recon_loss +
+            #     kl_weight * kl_loss +
+            #     feature_matching_weight * feature_matching_loss
+            # )
             condition_loss = (
-                recon_loss + 
-                kl_weight * kl_loss + 
-                feature_matching_weight * feature_matching_loss
+                    recon_loss +
+                    kl_loss * kl_weight
             )
             
             condition_losses[condition] = condition_loss
@@ -125,6 +150,10 @@ class CAMPlusLightningModule(pl.LightningModule):
             
             # 记录每个条件的损失
             self.log(f'train/{condition}_loss', condition_loss, on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f'train/{condition}_kl', kl_loss_outputs["kl"], on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f'train/{condition}_q0', kl_loss_outputs["q0"], on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f'train/{condition}_z', kl_loss_outputs["z"], on_epoch=True, prog_bar=False, sync_dist=True)
+
         
         # 计算总损失
         total_loss = sum(condition_losses.values())
@@ -133,7 +162,7 @@ class CAMPlusLightningModule(pl.LightningModule):
         self.log('train/loss', total_loss, on_step=True, prog_bar=True, sync_dist=True)
         self.log('recon', total_recon_loss, on_step=True, prog_bar=True, sync_dist=True)
         self.log('kl', total_kl_loss, on_step=True, prog_bar=True, sync_dist=False)
-        self.log('feature', total_feature_matching_loss, on_step=True, prog_bar=True, sync_dist=True)
+        # self.log('feature', total_feature_matching_loss, on_step=True, prog_bar=True, sync_dist=True)
         
         return total_loss
     
@@ -151,6 +180,10 @@ class CAMPlusLightningModule(pl.LightningModule):
         mus     = outs['mus']
         logvars = outs['logvars']
 
+        z = outs['z']
+        log_qk = outs['all_log_qk']
+        total_log_det = outs['total_log_det']
+
         batch_loss      = 0.0
         total_recon_loss = 0.0
         total_kl_loss    = 0.0
@@ -163,11 +196,24 @@ class CAMPlusLightningModule(pl.LightningModule):
         for cond, out_img in outputs.items():
             # 重建 + KL loss
             recon = self.recon_loss_fn(out_img, target_img)
-            kl    = self.model.kl_divergence_loss(mus[cond], logvars[cond])
+            # kl    = self.model.kl_divergence_loss(mus[cond], logvars[cond])
             w_cond = self.config.get(f'{cond}_weight', 1.0)
-            w_kl   = self.config.get('beta', 0.01)
+            w_kl   = self.kl_max
 
-            cond_loss = (recon + w_kl * kl) * w_cond
+            # kl = FlowKLLoss(beta=w_kl)(mus[cond], logvars[cond], total_log_det[cond])
+            kl_outputs = self.KLLoss(z[cond],
+                             mus[cond],
+                             logvars[cond],
+                             log_qk[cond],
+                             total_log_det[cond]
+                             )
+            # kl = self.KLLoss(total_log_det[cond])
+            # cond_loss = (recon + w_kl * kl) * w_cond
+
+            kl = kl_outputs["loss"]
+
+            cond_loss = (recon + kl * w_kl) * w_cond
+
             batch_loss      += cond_loss
             total_recon_loss += recon * w_cond
             total_kl_loss    += kl    * w_cond
@@ -183,6 +229,12 @@ class CAMPlusLightningModule(pl.LightningModule):
             self.log(f'val/{cond}_psnr', psnr,
                      on_epoch=True, prog_bar=False, sync_dist=True)
             self.log(f'val/{cond}_ssim', ssim,
+                     on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f'val/{cond}_kl', kl_outputs["kl"],
+                     on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f'val/{cond}_q0', kl_outputs["q0"],
+                     on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f'val/{cond}_z', kl_outputs["z"],
                      on_epoch=True, prog_bar=False, sync_dist=True)
 
         # 全局 loss 和两项子项
@@ -201,13 +253,13 @@ class CAMPlusLightningModule(pl.LightningModule):
         self.log('ssim', batch_ssim,
                  on_epoch=True, sync_dist=True)
 
-        # 可选：第一个 batch 打图
-        if batch_idx == 0 and self.trainer.is_global_zero:
-            self._log_images(source_images, target_img, outputs)
+        if (batch_idx == 0 and self.trainer.is_global_zero) and not self.trainer.sanity_checking:
+            # 存起来，给 epoch_end 用
+            self._last_val_batch = (batch['source_images'], batch['target_img'], outputs)
 
     def on_validation_epoch_end(self) -> None:
         # 只在 global zero （rank0） 打印，避免多卡重复输出
-        if not self.trainer.is_global_zero:
+        if not self.trainer.is_global_zero or self.trainer.sanity_checking:
             return
 
         metrics = self.trainer.callback_metrics
@@ -227,6 +279,12 @@ class CAMPlusLightningModule(pl.LightningModule):
             p = metrics.get(f'val/{cond}_psnr_epoch') or metrics.get(f'val/{cond}_psnr')
             s = metrics.get(f'val/{cond}_ssim_epoch') or metrics.get(f'val/{cond}_ssim')
             print(f"  [{cond}]  PSNR: {p:.2f}, SSIM: {s:.2f}")
+
+        n = self.config.get('sample_interval', 5)
+        if self.current_epoch % n == 0:
+            source_images, target_img, outputs = self._last_val_batch
+            self._log_images(source_images, target_img, outputs)
+
     
     def _log_images(self, source_images, target_img, output_imgs):
         """记录图像样本
@@ -237,11 +295,10 @@ class CAMPlusLightningModule(pl.LightningModule):
             output_imgs: 生成的图像字典
         """
         # 创建一个包含源图像、每个条件生成的图像和目标图像的网格
-        images = []
+        images = [("Target", target_img)]
         
         # 添加目标图像
-        images.append(("Target", target_img))
-        
+
         # 添加每个条件的源图像和生成图像
         for condition in source_images:
             images.append((f"Source ({condition})", source_images[condition]))
@@ -254,7 +311,7 @@ class CAMPlusLightningModule(pl.LightningModule):
         
         save_image_grid(
             images,
-            os.path.join(output_dir, f'samples_epoch_{self.current_epoch}.png'),
+            os.path.join(output_dir, f'{self.tag}/ep_{self.current_epoch}.png'),
             nrow=3  # 每行显示3张图像
         )
     
@@ -265,17 +322,23 @@ class CAMPlusLightningModule(pl.LightningModule):
             优化器和学习率调度器
         """
         optimizer = torch.optim.Adam(self.parameters(), lr=self.config['lr'])
-        scheduler = StepLR(optimizer, step_size=self.config['lr_step'], gamma=0.5)
+        total_steps = self.trainer.estimated_stepping_batches
+        scheduler = OneCycleLR(optimizer,
+                               max_lr=self.config["lr"] * 10,
+                               total_steps=total_steps,
+                               anneal_strategy=self.config.get('anneal_strategy', 'cos'),
+                               div_factor=self.config.get('div_factor', 20),
+                               final_div_factor=1e3,
+                               last_epoch=-1)
         
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'interval': 'epoch',
+                'interval': 'step',
                 'frequency': 1
             }
         }
-
 
 class CAMPlusDataModule(pl.LightningDataModule):
     """CAM+数据模块
@@ -409,6 +472,7 @@ def train_with_lightning(config):
     
     # 创建输出目录
     output_dir = config.get('output_dir', './output_plus')
+    tag = config.get('tag')
     os.makedirs(output_dir, exist_ok=True)
     
     # 创建模型和数据模块
@@ -417,11 +481,11 @@ def train_with_lightning(config):
     
     # 创建回调
     checkpoint_callback = ModelCheckpoint(
-        dirpath=output_dir,
-        filename='{epoch:02d}-{v/loss:.4f}',
-        save_top_k=3,
+        dirpath=f'{tag}/{output_dir}',
+        filename=f'{tag}'+'/{epoch:02d}-{v/recon:.2f}',
+        save_top_k=1,
         verbose=False,
-        monitor='v/loss',
+        monitor='v/recon',
         mode='min',
         auto_insert_metric_name=False,
     )
@@ -441,12 +505,7 @@ def train_with_lightning(config):
     else:
         # 使用所有可用的GPU
         devices = -1
-    
-    # 确定使用的策略
-    import platform
-    is_windows = platform.system() == 'Windows'
-    
-    # Windows环境下默认使用单GPU模式
+
     strategy = config.get('strategy', 'ddp')  # 默认使用DDP策略
     
     # 创建训练器
@@ -495,6 +554,12 @@ def main():
                         help='运行模式: train或test')
     parser.add_argument('--gpus', type=int, default=None,
                         help='使用的GPU数量，仅在直接调用模式下有效')
+    parser.add_argument('--batch_size', type=int, default=None,
+                        help='batch_size')
+    parser.add_argument('--device_ids', type=int, nargs='+',default=[4, 5, 6, 7],
+                        help='标识')
+    parser.add_argument('--tag', type=str, default=None,
+                        help='标识')
     parser.add_argument('--local_rank', type=int, default=0,
                         help='本地进程排名，由torchrun自动设置')
     args = parser.parse_args()
@@ -505,10 +570,19 @@ def main():
     
     # 确保设备正确设置
     config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
+
+    if args.device_ids is not None:
+        config['device_ids'] = args.device_ids
+
+    if args.tag is not None:
+        config['tag'] = args.tag
+
     # 如果指定了GPU数量，更新配置
     if args.gpus is not None:
         config['gpus'] = args.gpus
+
+    if args.batch_size is not None:
+        config['batch_size'] = args.batch_size
     
     if args.mode == 'train':
         # 训练模式
