@@ -70,11 +70,6 @@ class CrossScaleFeatureFusion(nn.Module):
 
         self.mode = mode
         if mode != 'none':
-            # 特征转换层
-            self.transforms = nn.ModuleList()
-            for _ in range(num_scales):
-                self.transforms.append(ConvBlock(channels, channels))
-
             # 自适应权重生成
             self.weight_generator = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),
@@ -84,8 +79,8 @@ class CrossScaleFeatureFusion(nn.Module):
 
             # 融合后的特征增强
             self.fusion_enhance = nn.Sequential(
+                AttentionModule(channels, attention_type),
                 ConvBlock(channels, channels),
-                AttentionModule(channels, attention_type)
             )
         else:
             self.weight_generator = ConvBlock(channels * num_scales, channels)
@@ -104,15 +99,10 @@ class CrossScaleFeatureFusion(nn.Module):
         aligned_features = []
         
         for i, feature in enumerate(features):
-            # 应用特征转换
-            if self.mode != 'none':
-                transformed = self.transforms[i](feature)
-            else:
-                transformed = feature
             # 调整空间尺寸
-            if transformed.shape[2:] != target_size:
-                transformed = F.interpolate(transformed, size=target_size, mode='bilinear', align_corners=False)
-            aligned_features.append(transformed)
+            if feature.shape[2:] != target_size:
+                feature = F.interpolate(feature, size=target_size, mode='bilinear', align_corners=False)
+            aligned_features.append(feature)
         
         # 计算自适应权重
         if self.mode != 'none':
@@ -131,10 +121,10 @@ class CrossScaleFeatureFusion(nn.Module):
             # 增强融合特征
             enhanced = self.fusion_enhance(fused)
         else:
-            fused = sum(aligned_features) / len(aligned_features)
             concat_features = torch.cat(aligned_features, dim=1)
-            weight = self.weight_generator(concat_features)
-            enhanced = fused + weight
+            # fused = concat_features.mean()
+            enhanced = self.weight_generator(concat_features)
+            # enhanced = fused + weight
         return enhanced
 
         

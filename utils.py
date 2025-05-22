@@ -8,7 +8,6 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import json
 import random
-from model import load_model
 
 
 def seed_everything(seed):
@@ -351,46 +350,3 @@ def batch_process(model, source_dir, target_dir, output_dir, config):
     print(f"Average SSIM: {avg_metrics['avg_ssim']:.4f} ± {avg_metrics['std_ssim']:.4f}")
     
     return avg_metrics
-
-
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='CAM Utilities')
-    parser.add_argument('--mode', type=str, choices=['visualize', 'batch'], required=True,
-                        help='运行模式: visualize或batch')
-    parser.add_argument('--checkpoint', type=str, required=True,
-                        help='模型检查点路径')
-    parser.add_argument('--config', type=str, default='config.json',
-                        help='配置文件路径')
-    parser.add_argument('--source', type=str, required=True,
-                        help='源条件图像路径或目录')
-    parser.add_argument('--target', type=str, required=True,
-                        help='目标条件图像路径或目录')
-    parser.add_argument('--output', type=str, default='./results',
-                        help='输出目录')
-    
-    args = parser.parse_args()
-    
-    # 加载配置
-    with open(args.config, 'r') as f:
-        config = json.load(f)
-    
-    config['device'] = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
-    
-    # 加载模型
-    model, _ = load_model(args.checkpoint, config['device'])
-    
-    if args.mode == 'visualize':
-        # 解析源条件路径
-        source_paths = {}
-        for item in args.source.split(','):
-            condition, path = item.split('=')
-            source_paths[condition] = path
-        
-        visualize_alignment(model, source_paths, args.target, args.output, config)
-        print(f"可视化结果已保存到: {args.output}")
-    
-    elif args.mode == 'batch':
-        metrics = batch_process(model, args.source, args.target, args.output, config)
-        print(f"批处理结果已保存到: {args.output}")

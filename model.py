@@ -15,10 +15,13 @@ class ConvBlock(nn.Module):
             self.bn = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True)
         else:
             self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.SiLU(inplace=True)
+        self.relu = nn.ELU(inplace=True)
         
     def forward(self, x):
-        return self.relu(self.bn(self.conv(x)))
+        x = self.conv(x)
+        x = self.bn(x)  # 这里的ln是 nn.LayerNorm(out_channels)
+        x = self.relu(x)
+        return x
 
 
 class ResidualBlock(nn.Module):
@@ -177,53 +180,6 @@ class AttentionModule(nn.Module):
             return {}
 
 
-class InformationBottleneckLayer(nn.Module):
-    """基于信息瓶颈理论的特征提取层
-    
-    通过控制信息流动，保留与目标相关的信息，丢弃无关信息
-    """
-    def __init__(self, in_channels, out_channels, beta=0.1, attention_type='cbam', reduction_ratio=8):
-        super(InformationBottleneckLayer, self).__init__()
-        self.beta = beta  # 信息瓶颈中的权衡参数
-        
-        # 编码器部分
-        self.conv = ConvBlock(in_channels, out_channels)
-        self.res = ResidualBlock(out_channels)
-        self.attention = AttentionModule(out_channels, attention_type, reduction_ratio)
-        
-        # 均值和方差预测
-        self.mu_conv = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.logvar_conv = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        
-    def reparameterize(self, mu, logvar):
-        """重参数化技巧，使得反向传播可行"""
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-    
-    def forward(self, x):
-        # 编码特征
-        features = self.conv(x)
-        features = self.res(features)
-        features = self.attention(features)
-        
-        # 预测均值和方差
-        mu = self.mu_conv(features)
-        logvar = self.logvar_conv(features)
-        
-        # 应用重参数化
-        z = self.reparameterize(mu, logvar)
-        
-        # 保存注意力图用于可视化
-        self.attention_maps = self.attention.get_attention_maps()
-        
-        return z, mu, logvar
-    
-    def get_attention_maps(self):
-        """获取注意力图用于可视化"""
-        return self.attention_maps
-
-
 class UNetBlock(nn.Module):
     """UNet基本块，包含卷积、注意力和下采样/上采样操作"""
     def __init__(self, in_channels, out_channels, attention_type='cbam', down=True):
@@ -247,7 +203,7 @@ class UNetBlock(nn.Module):
 
     def forward(self, x, skip=None):
         if self.down:
-            if x is not None:  # 第一层没有池化
+            if x is not None:
                 x = self.pool(x)
             x = self.conv(x)
             x = self.attention(x)

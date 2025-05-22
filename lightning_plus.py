@@ -1,6 +1,6 @@
 import os
 import torch
-
+torch.set_float32_matmul_precision('high')
 import pytorch_lightning as pl
 
 from pytorch_lightning.cli import LightningCLI
@@ -12,7 +12,7 @@ from torchvision import transforms
 from enhanced_vae import EntropyKLLoss
 from model_plus import CAMPlus
 from data_loader_plus import MultiConditionDataset
-from losses import ReconstructionLoss, FeatureMatchingLoss
+from losses import ReconstructionLoss, TargetCentricFeatureMatchingLoss
 from utils import save_image_grid, compute_psnr, compute_ssim
 
 
@@ -33,17 +33,15 @@ class CAMPlusLightningModule(pl.LightningModule):
 
         self.tag = config.get("tag")
 
-        self.kl_min = 1e-5
+        self.kl_min = 1e-6
         self.kl_max = config.get('beta', 0.1)                               # config
         self.kl_warmup_epochs = config.get('beta_warmup_epochs', 20)        # config
-        self.kl_increase_epochs = config.get('kl_increase_epochs', 10)
         
         # 创建模型
         self.model = CAMPlus(config)
         
         # 定义损失函数
         self.recon_loss_fn = ReconstructionLoss(loss_type=config.get('recon_loss_type', 'l1'))
-        self.feature_matching_loss_fn = FeatureMatchingLoss(loss_type=config.get('feature_matching_loss_type', 'l1'))
         
         # 设置自动优化
         self.automatic_optimization = True
@@ -88,73 +86,48 @@ class CAMPlusLightningModule(pl.LightningModule):
         z = outputs['z']
         total_log_det = outputs['total_log_det']
         log_qk = outputs['all_log_qk']
-        encoder_features = outputs['encoder_features']
-        target_features = outputs['target_features']
         
         # 计算每个条件的损失
         total_recon_loss = 0
         total_kl_loss = 0
-        total_feature_matching_loss = 0
         condition_losses = {}
 
+        if epoch < self.kl_warmup_epochs:
+            kl_weight = self.kl_min + (self.kl_max - self.kl_min) * (epoch
+                                                                     / self.kl_warmup_epochs)
+        else:
+            # 达到 n epoch 后就保持最大值
+            kl_weight = self.kl_max
+        self.log('kl_weight', kl_weight, prog_bar=True)
 
         for condition, output_img in output_imgs.items():
             # 1. 重建损失
             recon_loss = self.recon_loss_fn(output_img, target_img)
-            
-            # 2. KL散度损失
-            # kl_loss = self.model.kl_divergence_loss(mus[condition], logvars[condition])
 
-            # 3. 特征匹配损失
-            feature_matching_loss = 0
-            # if target_features is not None:
-                # feature_matching_loss = self.feature_matching_loss_fn(encoder_features[condition], target_features)
-                # total_feature_matching_loss += feature_matching_loss * self.config.get(f'{condition}_weight', 1.0)
-            
-            # 条件权重
-            # feature_matching_weight = self.config.get('feature_matching_weight', 0.1)
-            # kl_weight = self.config.get('beta', 0.01)
+            kl_loss_outputs = self.KLLoss(
+                                          z[condition],
+                                          mus[condition],
+                                          logvars[condition],
+                                          total_log_det[condition]
+                                         )
 
-
-            if epoch < self.kl_warmup_epochs:
-                kl_weight = self.kl_min + (self.kl_max - self.kl_min) * (epoch
-                                                                         / self.kl_warmup_epochs)
-            else:
-                # 达到 n epoch 后就保持最大值
-                kl_weight = self.kl_max
-            self.log('kl_weight', kl_weight, prog_bar=True)
-
-            kl_loss_outputs = self.KLLoss(z[condition],
-                                  mus[condition],
-                                  logvars[condition],
-                                  log_qk[condition],
-                                  total_log_det[condition]
-                                  )
             kl_loss = kl_loss_outputs["loss"]
 
-            # kl_loss = self.KLLoss(total_log_det[condition])
-            # 计算当前条件的总损失
-            # condition_loss = (
-            #     recon_loss +
-            #     kl_weight * kl_loss +
-            #     feature_matching_weight * feature_matching_loss
-            # )
             condition_loss = (
                     recon_loss +
                     kl_loss * kl_weight
             )
             
-            condition_losses[condition] = condition_loss
+            condition_losses[condition] = condition_loss * self.config.get(f'{condition}_w')
             total_recon_loss += recon_loss
             total_kl_loss += kl_loss
             
             # 记录每个条件的损失
-            self.log(f'train/{condition}_loss', condition_loss, on_epoch=True, prog_bar=False, sync_dist=True)
-            self.log(f'train/{condition}_kl', kl_loss_outputs["kl"], on_epoch=True, prog_bar=False, sync_dist=True)
-            self.log(f'train/{condition}_q0', kl_loss_outputs["q0"], on_epoch=True, prog_bar=False, sync_dist=True)
-            self.log(f'train/{condition}_z', kl_loss_outputs["z"], on_epoch=True, prog_bar=False, sync_dist=True)
-
-        
+            self.log(f'train/{condition}_loss', condition_loss, on_epoch=True, on_step=False, prog_bar=False, sync_dist=True)
+            self.log(f'train/{condition}_kl', kl_loss_outputs["kl"], on_epoch=True, on_step=False, prog_bar=False, sync_dist=True)
+            self.log(f'train/{condition}_z', kl_loss_outputs["z"], on_epoch=True, on_step=False, prog_bar=False, sync_dist=True)
+            self.log(f'train/{condition}_logdet', kl_loss_outputs["log_det"], on_epoch=True, on_step=False, prog_bar=False,
+                     sync_dist=True)
         # 计算总损失
         total_loss = sum(condition_losses.values())
 
@@ -162,7 +135,6 @@ class CAMPlusLightningModule(pl.LightningModule):
         self.log('train/loss', total_loss, on_step=True, prog_bar=True, sync_dist=True)
         self.log('recon', total_recon_loss, on_step=True, prog_bar=True, sync_dist=True)
         self.log('kl', total_kl_loss, on_step=True, prog_bar=True, sync_dist=False)
-        # self.log('feature', total_feature_matching_loss, on_step=True, prog_bar=True, sync_dist=True)
         
         return total_loss
     
@@ -200,15 +172,12 @@ class CAMPlusLightningModule(pl.LightningModule):
             w_cond = self.config.get(f'{cond}_weight', 1.0)
             w_kl   = self.kl_max
 
-            # kl = FlowKLLoss(beta=w_kl)(mus[cond], logvars[cond], total_log_det[cond])
-            kl_outputs = self.KLLoss(z[cond],
-                             mus[cond],
-                             logvars[cond],
-                             log_qk[cond],
-                             total_log_det[cond]
-                             )
-            # kl = self.KLLoss(total_log_det[cond])
-            # cond_loss = (recon + w_kl * kl) * w_cond
+            kl_outputs = self.KLLoss(
+                                     z[cond],
+                                     mus[cond],
+                                     logvars[cond],
+                                     total_log_det[cond]
+                                    )
 
             kl = kl_outputs["loss"]
 
@@ -232,9 +201,9 @@ class CAMPlusLightningModule(pl.LightningModule):
                      on_epoch=True, prog_bar=False, sync_dist=True)
             self.log(f'val/{cond}_kl', kl_outputs["kl"],
                      on_epoch=True, prog_bar=False, sync_dist=True)
-            self.log(f'val/{cond}_q0', kl_outputs["q0"],
-                     on_epoch=True, prog_bar=False, sync_dist=True)
             self.log(f'val/{cond}_z', kl_outputs["z"],
+                     on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f'val/{cond}_logdet', kl_outputs["log_det"],
                      on_epoch=True, prog_bar=False, sync_dist=True)
 
         # 全局 loss 和两项子项
@@ -321,14 +290,14 @@ class CAMPlusLightningModule(pl.LightningModule):
         Returns:
             优化器和学习率调度器
         """
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.config['lr'])
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.config['lr'])
         total_steps = self.trainer.estimated_stepping_batches
         scheduler = OneCycleLR(optimizer,
                                max_lr=self.config["lr"] * 10,
                                total_steps=total_steps,
                                anneal_strategy=self.config.get('anneal_strategy', 'cos'),
-                               div_factor=self.config.get('div_factor', 20),
-                               final_div_factor=1e3,
+                               div_factor=self.config.get('div_factor', 25),
+                               final_div_factor=1e4,
                                last_epoch=-1)
         
         return {
@@ -556,7 +525,7 @@ def main():
                         help='使用的GPU数量，仅在直接调用模式下有效')
     parser.add_argument('--batch_size', type=int, default=None,
                         help='batch_size')
-    parser.add_argument('--device_ids', type=int, nargs='+',default=[4, 5, 6, 7],
+    parser.add_argument('--device_ids', type=int, nargs='+',default=[5, 6, 7],
                         help='标识')
     parser.add_argument('--tag', type=str, default=None,
                         help='标识')

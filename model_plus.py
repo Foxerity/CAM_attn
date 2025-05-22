@@ -109,7 +109,7 @@ class SharedEncoder(nn.Module):
         )
 
         # 最终特征调整
-        self.final_adjust = ConvBlock(base_channels * 4, in_channels, kernel_size=1, padding=0)
+        self.final_adjust = nn.Conv2d(base_channels * 4, in_channels, kernel_size=1, padding=0)
 
         # 输出通道数
         self.out_channels = in_channels
@@ -128,19 +128,8 @@ class SharedEncoder(nn.Module):
         skips = []
 
         # 确保特征列表的一致性，即使对于target特征也能正确处理
-        if all_features:
-            features = all_features.copy()
-        else:
-            # 如果没有提供中间特征，创建一个新的列表
-            # 确保列表长度与其他条件的特征列表一致
-            # 通常其他条件的特征列表包含浅层特征（通道数较少）
-            features = [x]
-            # 添加两个空特征，模拟浅层特征，确保列表长度一致
-            # 这些特征将在FPN中被正确处理
-            batch_size, channels, height, width = x.shape
-            # 添加两个浅层特征，通道数逐渐减少
-            features.insert(0, torch.zeros(batch_size, channels // 4, height * 4, width * 4, device=x.device))
-            features.insert(0, torch.zeros(batch_size, channels // 8, height * 8, width * 8, device=x.device))
+        features = all_features.copy()
+
 
         for i, block in enumerate(self.down_blocks):
             x = block(x)
@@ -155,61 +144,6 @@ class SharedEncoder(nn.Module):
         x = x + enhanced_features  # 残差连接
 
         return x, skips
-
-
-class CrossConditionAttention(nn.Module):
-    """跨条件注意力模块
-    
-    使用注意力机制融合不同条件的特征，增强条件间的信息交流
-    """
-
-    def __init__(self, channels, attention_type='cbam'):
-        super(CrossConditionAttention, self).__init__()
-
-        # 注意力生成层 - 动态适应输入通道数
-        self.attention_conv = nn.Conv2d(channels, channels, kernel_size=1)
-
-        self.sigmoid = nn.Sigmoid()
-
-        # 特征融合后的增强
-        self.enhance = nn.Sequential(
-            ConvBlock(channels, channels),
-            AttentionModule(channels, attention_type)
-        )
-
-    def forward(self, x, condition_name, all_condition_features):
-        """前向传播
-        
-        Args:
-            x: 当前条件的特征
-            condition_name: 当前条件的名称
-            all_condition_features: 所有条件的特征字典
-            
-        Returns:
-            融合后的特征
-        """
-        # 获取其他条件的特征
-        other_conditions = [c for c in all_condition_features.keys() if c != condition_name]
-        if not other_conditions:
-            return x  # 如果没有其他条件，直接返回原始特征
-
-        # 计算其他条件的平均特征
-        other_features = torch.mean(torch.stack([all_condition_features[c] for c in other_conditions]), dim=0)
-
-        # 分别处理两个特征，然后相加，而不是直接拼接
-        combined_attn = self.attention_conv(x + other_features)
-        attention_weights = self.sigmoid(combined_attn)
-
-        # 应用注意力权重
-        attended = x * attention_weights
-
-        # 融合原始特征和注意力加权特征
-        fused = x + attended
-
-        # 增强融合特征
-        enhanced = self.enhance(fused)
-
-        return enhanced
 
 
 class Decoder(nn.Module):
@@ -277,11 +211,11 @@ class CAMPlus(nn.Module):
         base_channels = config.get('base_channels', 64)
         depth = config.get('depth', 4)  # UNet深度
         attention_type = config.get('attention_type', 'cbam')
-        beta = config.get('beta', 0.01)
         self.source_conditions = config.get('source_conditions', ['canny', 'sketch', 'color'])
+        self.bs = config.get("batch_size")
 
         # 分割深度，前半部分为条件特定，后半部分为共享
-        specific_depth = depth // 2
+        specific_depth = 2
         shared_depth = depth - specific_depth
 
         # 为每种条件创建专属编码器
@@ -308,6 +242,9 @@ class CAMPlus(nn.Module):
             self.bottlenecks[condition] = NVAEBottleneck(
                 bottleneck_channels, bottleneck_channels
             )
+        # self.bottlenecks = NVAEBottleneck(
+        #         bottleneck_channels, bottleneck_channels
+        #     )
 
         # 共享解码器
         self.decoder = Decoder(
@@ -351,7 +288,6 @@ class CAMPlus(nn.Module):
         shared_outputs = {}
         shared_skips = {}
 
-        # 收集所有条件的特征用于跨条件注意力
         for condition, features in specific_features.items():
             # 使用共享编码器处理特征，传入所有条件的特征用于跨条件融合
             shared_output, shared_skip = self.shared_encoder(
@@ -372,6 +308,8 @@ class CAMPlus(nn.Module):
 
         for condition in shared_outputs.keys():
             z, mu, logvar, log_qk, total_log_det = self.bottlenecks[condition](shared_outputs[condition])
+            # z, mu, logvar, log_qk, total_log_det = self.bottlenecks(shared_outputs[condition])
+
             all_mus[condition] = mu
             all_logvars[condition] = logvar
             all_log_qk[condition] = log_qk
@@ -382,40 +320,14 @@ class CAMPlus(nn.Module):
             output = self.decoder(z, shared_skips[condition][: -1])
             all_results[condition] = output
 
-        # 提取目标特征（如果提供了目标图像）
-        target_features = None
-        if target_img is not None:
-            # 使用目标专属编码器处理输入
-            target_specific_features, target_skips, target_mid_features = self.target_specific_encoder(target_img)
-            # 使用共享编码器处理特征，确保传递完整的特征列表
-            target_features, target_shared_skips = self.shared_encoder(
-                target_specific_features,
-                target_mid_features,  # 传递中间特征列表，而不是None
-            )
-
         # 返回所有结果
         return {
             'outputs': all_results,  # 每个条件的输出
             'mus': all_mus,
             'logvars': all_logvars,
             'encoder_features': shared_outputs,  # 编码器输出
-            'target_features': target_features,  # 目标特征（已经过shared_encoder处理）
             'total_log_det': all_total_log_det,
             'all_log_qk': all_log_qk,
             'z': all_z
         }
-
-    def kl_divergence_loss(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """
-        计算 VAE 的 KL 散度（batch-mean），并强制 FP32 以提高数值稳定性。
-        公式： 0.5 * E_batch [sum_dim (μ^2 + σ^2 - 1 - log σ^2)]
-        """
-        # 禁用 AMP，让 exp/log 在 FP32 下运行
-        with torch.cuda.amp.autocast(enabled=False):
-            logvar = torch.clamp(logvar, -10.0, 10.0)
-            # 计算每个样本的KL损失
-            batch_size = mu.size(0)
-            kl_terms = 1 + logvar - mu.pow(2) - logvar.exp()
-            kl_loss = -0.5 * torch.sum(kl_terms) / batch_size  # 除以批次大小进行归一化
-            return kl_loss
 
