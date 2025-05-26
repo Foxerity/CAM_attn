@@ -1,0 +1,23 @@
+"source_conditions": [
+    "canny",
+    "sketch",
+    "color",
+    "hed",
+    "illusion",
+    "lineart"
+  ],
+
+  "source_conditions": [
+    "hed",
+    "illusion",
+    "lineart"
+  ],
+
+
+  new3_1_0.5_0.5
+  === Epoch 348 Summary ===
+  loss:  291.25, recon: 0.12, kl: 29113.28
+  psnr:  28.82, ssim: 0.94
+  [hed]  PSNR: 30.00, SSIM: 0.95
+  [illusion]  PSNR: 26.60, SSIM: 0.92
+  [lineart]  PSNR: 29.87, SSIM: 0.95

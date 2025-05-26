@@ -34,7 +34,7 @@ train_loader, val_loader = get_multi_condition_loaders(config)
 
 model = CAMPlus(config).to(config['device'])
 
-ckpt = torch.load(r"new3_flow1_0.5_0.5/output_plus/new3_flow1_0.5_0.5/572-0.05.ckpt", map_location="cpu")
+ckpt = torch.load(r"output_plus/new3_flow1_0.5_0.5/572-0.05.ckpt", map_location="cpu")
 
 # 如果权重嵌套在 'state_dict' 或 'model' 字段中，先取出来
 state_dict = ckpt.get('state_dict', ckpt.get('model', ckpt))
