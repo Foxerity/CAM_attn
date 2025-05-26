@@ -1,14 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from torch.distributions import Normal
 
 
 # ------------------------------
 # Flow modules implementation
 # ------------------------------
-
 # ------------------ Utility: ActNorm（保持不变） ------------------ #
 class ActNorm(nn.Module):
     def __init__(self, num_features, eps=1e-6):
@@ -37,6 +35,8 @@ class ActNorm(nn.Module):
         B, _, H, W = x.shape
         logdet = sign * self.log_scale.view(-1).sum()
         return x, logdet.expand(B)            # (B,)
+
+
 
 # ------------------ Slim Affine Coupling ------------------------- #
 class AffineCouplingLite(nn.Module):
@@ -73,11 +73,12 @@ class AffineCouplingLite(nn.Module):
             z_b = (z_b - t) * torch.exp(-log_s)
             logdet = -log_s
         else:
-            z_b = (z_b + t) * torch.exp( log_s)
+            z_b = z_b * torch.exp(log_s) + t
             logdet =  log_s
 
         z_out = torch.cat([z_a, z_b], 1)
         return z_out, logdet.sum([1,2,3])     # (B,C,H,W) , (B,)
+
 
 # ------------------ Slim FlowStep ------------------------------- #
 class FlowStep(nn.Module):
@@ -88,14 +89,14 @@ class FlowStep(nn.Module):
     def __init__(self, z_channels, ftr_channels,
                  hidden_channels=None, clamp=3.5):
         super().__init__()
-        self.actnorm  = nn.Identity()
+        self.actnorm = nn.Identity()
         self.coupling = AffineCouplingLite(z_channels, ftr_channels,
                                            hidden=hidden_channels, clamp=clamp)
 
     def forward(self, z, ftr, reverse=False):
         logdet_total = torch.zeros(z.size(0), device=z.device)  # (B,)
 
-        # z, ld = self.actnorm(z, reverse)
+        # z, ld = self.actnorm(z)
         # logdet_total += ld
 
         z, ld = self.coupling(z, ftr, reverse)
@@ -110,7 +111,7 @@ class NVAEBottleneck(nn.Module):
     """
     NVAE-style VAE bottleneck: initial Gaussian posterior + normalizing flows.
     """
-    def __init__(self, in_channels, latent_channels, num_flows=2):
+    def __init__(self, in_channels, latent_channels, num_flows=1):
         super().__init__()
         self.latent_channels = latent_channels
         self.mu_head = nn.Sequential(
@@ -124,7 +125,7 @@ class NVAEBottleneck(nn.Module):
         self.eps = 1e-5
         # create flow steps
         self.flows = nn.ModuleList([
-            FlowStep(latent_channels, in_channels, latent_channels // 2)
+            FlowStep(in_channels, latent_channels)
             for _ in range(num_flows)
         ])
     def forward(self, x):
@@ -137,7 +138,8 @@ class NVAEBottleneck(nn.Module):
         q0 = Normal(mu, sigma)
         # z0 = loc + eps * scale
         z0 = q0.rsample()
-        log_q0 = q0.log_prob(z0)
+        # log_q0 = q0.log_prob(z0)
+        log_q0 = 0.
         # 2) Flows: z0 -> zK
         z = z0
         total_log_det = torch.zeros(z.size(0), device=z.device)  # (B,)

@@ -189,7 +189,7 @@ def save_image_grid(images, output_path, nrow=4, padding=2, normalize=True, valu
         # 这样可以确保所有图像具有相同的维度 [C, H, W]
         tensor_images = []
         sample_idx = 0  # 选择批次中的第一个样本
-        
+
         for label, img_tensor in images:
             try:
                 # 如果是批量张量 [B, C, H, W]，只取第一个样本

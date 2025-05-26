@@ -12,7 +12,7 @@ from PIL import Image
 
 from model_plus import CAMPlus
 from data_loader_plus import get_multi_condition_loaders
-from losses import ReconstructionLoss, FeatureMatchingLoss, ContrastiveLoss
+from losses import ReconstructionLoss, ContrastiveLoss
 from utils import save_image_grid, compute_psnr, compute_ssim
 
 
@@ -47,7 +47,7 @@ def train_model_plus(config):
     
     # 定义损失函数
     recon_loss_fn = ReconstructionLoss(loss_type=config.get('recon_loss_type', 'l1'))
-    feature_matching_loss_fn = FeatureMatchingLoss(loss_type=config.get('feature_matching_loss_type', 'l1'))
+    feature_matching_loss_fn = None
     contrastive_loss_fn = ContrastiveLoss(temperature=config.get('temperature', 0.5))
     
     # 定义优化器

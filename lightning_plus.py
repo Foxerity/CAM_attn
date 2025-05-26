@@ -450,7 +450,7 @@ def train_with_lightning(config):
     
     # 创建回调
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f'{tag}/{output_dir}',
+        dirpath=f'{output_dir}/{tag}',
         filename=f'{tag}'+'/{epoch:02d}-{v/recon:.2f}',
         save_top_k=1,
         verbose=False,
@@ -479,6 +479,7 @@ def train_with_lightning(config):
     
     # 创建训练器
     trainer = pl.Trainer(
+        num_sanity_val_steps=0,
         max_epochs=config['epochs'],
         accelerator='gpu',  # 使用GPU加速
         devices=devices,
@@ -486,7 +487,7 @@ def train_with_lightning(config):
         precision=config.get('precision', 16),  # 使用混合精度训练
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger,
-        log_every_n_steps=50,
+        log_every_n_steps=20,
         deterministic=False,  # 允许非确定性优化以提高性能
         accumulate_grad_batches=config.get('accumulate_grad_batches', 1),
         gradient_clip_val=config.get('gradient_clip_val', None),
