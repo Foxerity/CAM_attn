@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 
 from pytorch_lightning.cli import LightningCLI
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from torch.optim.lr_scheduler import OneCycleLR
 from torchvision import transforms
 
@@ -28,6 +28,7 @@ class CAMPlusLightningModule(pl.LightningModule):
         self.config = config
 
         self.conditions = list(config['source_conditions'])
+        self.target_cond = config["target_condition"]
 
         self.KLLoss = EntropyKLLoss()
 
@@ -59,7 +60,7 @@ class CAMPlusLightningModule(pl.LightningModule):
         Returns:
             模型输出
         """
-        return self.model(source_images, target_img)
+        return self.model(source_images)
     
     def training_step(self, batch, batch_idx):
         """训练步骤
@@ -78,7 +79,7 @@ class CAMPlusLightningModule(pl.LightningModule):
         epoch = float(self.current_epoch)
         
         # 前向传播
-        outputs = self(source_images, target_img)
+        outputs = self(source_images)
         
         output_imgs = outputs['outputs']  # 字典，键为条件名，值为对应的生成图像
         mus = outputs['mus']
@@ -309,6 +310,16 @@ class CAMPlusLightningModule(pl.LightningModule):
             }
         }
 
+
+class AverageRGB(object):
+    def __init__(self):
+        pass
+
+    def __call__(self, img):
+        # 将RGB图像转为灰度图像，平均三个通道
+        return torch.mean(transforms.ToTensor()(img), dim=0, keepdim=True)
+
+
 class CAMPlusDataModule(pl.LightningDataModule):
     """CAM+数据模块
     
@@ -333,8 +344,8 @@ class CAMPlusDataModule(pl.LightningDataModule):
         # 为RGB和灰度图像定义不同的转换
         transform_rgb = transforms.Compose([
             transforms.Resize((self.img_size, self.img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+            AverageRGB(),
+            transforms.Normalize(mean=[0.5], std=[0.5])
         ])
 
         transform_gray = transforms.Compose([
@@ -462,7 +473,13 @@ def train_with_lightning(config):
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
     
     # 创建日志记录器
-    logger = TensorBoardLogger(save_dir=output_dir, name='lightning_logs')
+    # logger = TensorBoardLogger(save_dir=output_dir, name='lightning_logs')
+    logger = WandbLogger(
+        project=config.get("project_name", "CAMPlus"),
+        name=tag,
+        config=config
+    )
+    logger.watch(model, log='all', log_graph=False)
     
     # 确定使用的GPU设备
     if 'device_ids' in config:

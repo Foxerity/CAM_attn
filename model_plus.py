@@ -222,7 +222,8 @@ class CAMPlus(nn.Module):
         self.specific_encoders = nn.ModuleDict()
         for condition in self.source_conditions:
             # 颜色条件使用3通道，其他条件（sketch、canny、depth）使用1通道
-            input_channels = 3 if condition == 'color' else 1
+            # input_channels = 3 if condition == 'color' else 1
+            input_channels = 1
             self.specific_encoders[condition] = ConditionSpecificEncoder(
                 input_channels, base_channels, specific_depth, attention_type
             )
@@ -236,37 +237,26 @@ class CAMPlus(nn.Module):
         print(f"创建共享编码器，输入通道数: {specific_out_channels}")
 
         # 为每个条件创建独立的增强版VAE瓶颈层
-        self.bottlenecks = nn.ModuleDict()
+        # self.bottlenecks = nn.ModuleDict()
         bottleneck_channels = base_channels * (2 ** depth)
-        for condition in self.source_conditions:
-            self.bottlenecks[condition] = NVAEBottleneck(
-                bottleneck_channels, bottleneck_channels
-            )
-        # self.bottlenecks = NVAEBottleneck(
+        # for condition in self.source_conditions:
+        #     self.bottlenecks[condition] = NVAEBottleneck(
         #         bottleneck_channels, bottleneck_channels
         #     )
+        self.bottlenecks = NVAEBottleneck(
+                bottleneck_channels, bottleneck_channels
+            )
 
         # 共享解码器
         self.decoder = Decoder(
             bottleneck_channels, base_channels, depth, attention_type, output_channels=1
         )
 
-        # 特征提取器，用于从目标图像中提取特征进行匹配
-        # 目标条件（通常是depth）使用单通道输入
-        target_input_channels = 1  # 目标条件通常是单通道（如深度图）
-        self.target_specific_encoder = ConditionSpecificEncoder(
-            target_input_channels, base_channels, specific_depth, attention_type
-        )
-        # 确保目标编码器的输出通道数与其他条件编码器一致
-        print(
-            f"为目标条件创建专属编码器，输入通道数: {target_input_channels}，输出通道数: {self.target_specific_encoder.out_channels}")
-
-    def forward(self, source_images, target_img=None):
+    def forward(self, source_images):
         """前向传播
         
         Args:
             source_images: 字典，键为条件名，值为对应的图像张量
-            target_img: 可选，目标图像，用于提取目标特征
             
         Returns:
             包含每个条件生成结果的字典
@@ -307,8 +297,8 @@ class CAMPlus(nn.Module):
 
 
         for condition in shared_outputs.keys():
-            z, mu, logvar, log_qk, total_log_det = self.bottlenecks[condition](shared_outputs[condition])
-            # z, mu, logvar, log_qk, total_log_det = self.bottlenecks(shared_outputs[condition])
+            # z, mu, logvar, log_qk, total_log_det = self.bottlenecks[condition](shared_outputs[condition])
+            z, mu, logvar, log_qk, total_log_det = self.bottlenecks(shared_outputs[condition])
 
             all_mus[condition] = mu
             all_logvars[condition] = logvar

@@ -8,6 +8,7 @@
     "color"
   ],
 
+  "depth_w": 1.0,
   "canny_w": 1.1,
   "sketch_w": 0.80,
   "color_w": 1.1,
@@ -17,7 +18,7 @@
   "illusion_w": 1.05,
 
   "img_size": 128,
-  "batch_size": 200,
+  "batch_size": 100,
   "num_workers": 8,
   "epochs": 600,
   "lr": 2e-4,

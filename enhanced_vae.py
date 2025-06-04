@@ -111,7 +111,7 @@ class NVAEBottleneck(nn.Module):
     """
     NVAE-style VAE bottleneck: initial Gaussian posterior + normalizing flows.
     """
-    def __init__(self, in_channels, latent_channels, num_flows=1):
+    def __init__(self, in_channels, latent_channels, num_flows=2):
         super().__init__()
         self.latent_channels = latent_channels
         self.mu_head = nn.Sequential(
