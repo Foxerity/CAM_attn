@@ -1,4 +1,3 @@
-/A_Survey_on_Information_Bottleneck.pdf
 /output/*
 /__pycache__/*
 /output_enhanced/*
@@ -9,3 +8,4 @@
 /.vscode/*
 /metrics/*
 /infer_results/*
+/paper/*
