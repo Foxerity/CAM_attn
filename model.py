@@ -24,6 +24,18 @@ class ConvBlock(nn.Module):
         return x
 
 
+class DyT(nn.Module):
+    def __init__(self, c, init_alpha):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.ones(1) * init_alpha)
+        self.gamma = nn.Parameter(torch.ones(c) * init_alpha)
+        self.beta = nn.Parameter(torch.zeros(1) * init_alpha)
+
+    def forward(self, x):
+        x = torch.tanh(self.alpha * x)
+        return self.gamma * x + self.beta
+
+
 class ResidualBlock(nn.Module):
     """残差块，用于保持特征信息的同时进行转换"""
     def __init__(self, channels):

@@ -13,6 +13,14 @@
     "lineart"
   ],
 
+  "target_condition": "illusion",
+  "tag": "default",
+  "source_conditions": [
+    "lineart",
+    "hed",
+    "color"
+  ],
+
 
   new3_1_0.5_0.5
   === Epoch 348 Summary ===

@@ -3,9 +3,9 @@
   "target_condition": "depth",
   "tag": "default",
   "source_conditions": [
-    "canny",
-    "sketch",
-    "color"
+    "hed",
+    "illusion",
+    "lineart"
   ],
 
   "depth_w": 1.0,
@@ -17,9 +17,9 @@
   "lineart_w": 0.9,
   "illusion_w": 1.05,
 
-  "img_size": 128,
-  "batch_size": 100,
-  "num_workers": 8,
+  "img_size": 256,
+  "batch_size": 50,
+  "num_workers": 4,
   "epochs": 600,
   "lr": 2e-4,
   "beta": 0.01,
@@ -31,7 +31,7 @@
   "sample_interval": 5,
   "recon_loss_type": "l1",
   "output_channels": 1,
-  "base_channels": 24,
+  "base_channels": 32,
   "depth": 6,
   "attention_type": "cbam",
   "accumulate_grad_batches": 1,

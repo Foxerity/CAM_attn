@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 
 from pytorch_lightning.cli import LightningCLI
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
+from pytorch_lightning.loggers import TensorBoardLogger
 from torch.optim.lr_scheduler import OneCycleLR
 from torchvision import transforms
 
@@ -284,7 +284,7 @@ class CAMPlusLightningModule(pl.LightningModule):
             os.path.join(output_dir, f'{self.tag}/ep_{self.current_epoch}.png'),
             nrow=3  # 每行显示3张图像
         )
-    
+
     def configure_optimizers(self):
         """配置优化器和学习率调度器
         
@@ -473,13 +473,7 @@ def train_with_lightning(config):
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
     
     # 创建日志记录器
-    # logger = TensorBoardLogger(save_dir=output_dir, name='lightning_logs')
-    logger = WandbLogger(
-        project=config.get("project_name", "CAMPlus"),
-        name=tag,
-        config=config
-    )
-    logger.watch(model, log='all', log_graph=False)
+    logger = TensorBoardLogger(save_dir=output_dir, name='lightning_logs')
     
     # 确定使用的GPU设备
     if 'device_ids' in config:
