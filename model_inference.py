@@ -6,7 +6,7 @@ import torch
 from data_loader_plus import get_multi_condition_loaders
 from model_plus import CAMPlus
 
-from utils import save_image_grid
+from utils import save_image_grid, compute_psnr, compute_ssim
 
 
 def load_config(config_path):
@@ -60,8 +60,9 @@ class CAMInfer:
         with torch.no_grad():
             for idx, batch in enumerate(self.val_loader):
                 # 获取数据
-                source_images = batch['source_images']
-                target_img = batch['target_img'].to(self.config['device'])
+                source_images:dict = batch['source_images']
+                target_img:torch.Tensor = batch['target_img'].to(self.config['device']) # (B, 1, 128, 128)
+                class_name:list = batch['class_name']
 
                 # 将所有源图像移动到设备
                 for condition in source_images:
@@ -77,6 +78,17 @@ class CAMInfer:
                     # 注意：outputs['outputs']是一个字典，包含每个条件的输出
 
                 images = [("Target", target_img)]
+                for k, v in outputs.items():
+                    psnr_attr = f"{k}_psnr_list"
+                    ssim_attr = f"{k}_ssim_list"
+                    if not hasattr(self, psnr_attr):
+                        setattr(self, psnr_attr, [])
+                        setattr(self, ssim_attr, [])
+                    psnr_list = getattr(self, psnr_attr)
+                    ssim_list = getattr(self, ssim_attr)
+                    psnr_list.append(compute_psnr(target_img, v))
+                    ssim_list.append(compute_ssim(target_img, v))
+
                 
                 # 添加每个条件的源图像和生成图像
                 for condition in source_images:
@@ -89,6 +101,35 @@ class CAMInfer:
                     os.path.join("./infer_results", f'samples_{idx}.png'),
                     nrow=3  # 每行显示3张图像
                 )
+
+            # 2. 打印每条分支的平均值
+            total_psnr_sum = 0.0
+            total_count = 0
+            for branch_name in outputs.keys():
+                psnr_list = getattr(self, f"{branch_name}_psnr_list")
+                avg_psnr = sum(psnr_list) / len(psnr_list)
+                print(f"{branch_name} PSNR average: {avg_psnr:.4f}")
+
+                total_psnr_sum += sum(psnr_list)
+                total_count += len(psnr_list)
+
+            # 3. 打印所有分支 PSNR 的总体平均
+            overall_avg_psnr = total_psnr_sum / total_count
+            print(f"Overall PSNR average: {overall_avg_psnr:.4f}")
+
+            # （同理，如果需要，也可以打印 SSIM 的平均值）
+            total_ssim_sum = 0.0
+            total_ssim_count = 0
+            for branch_name in outputs.keys():
+                ssim_list = getattr(self, f"{branch_name}_ssim_list")
+                avg_ssim = sum(ssim_list) / len(ssim_list)
+                print(f"{branch_name} SSIM average: {avg_ssim:.4f}")
+
+                total_ssim_sum += sum(ssim_list)
+                total_ssim_count += len(ssim_list)
+
+            overall_avg_ssim = total_ssim_sum / total_ssim_count
+            print(f"Overall SSIM average: {overall_avg_ssim:.4f}")
 
 
 if __name__ == '__main__':
