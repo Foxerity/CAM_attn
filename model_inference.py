@@ -2,12 +2,9 @@ import json
 import os
 
 import torch
-from PIL import Image
-from datasets import tqdm
 
 from data_loader_plus import get_multi_condition_loaders
 from model_plus import CAMPlus
-from torchvision import transforms
 
 from utils import save_image_grid
 
@@ -28,10 +25,10 @@ def load_config(config_path):
 
 
 class CAMInfer:
-    def __init__(self, config_path, model_path):
+    def __init__(self, config_path = "config_infer.json"):
         self.config_path = config_path
         self.config = load_config(self.config_path)
-        self.model_path = r"output_plus/new3_flow1_0.5_0.5/572-0.05.ckpt"
+        self.model_path = r"output_plus/new3_flow1_shareB/new3_flow1_shareB/574-0.05.ckpt"
         self.train_loader, self.val_loader = get_multi_condition_loaders(self.config)
 
         self.model = None
@@ -74,7 +71,7 @@ class CAMInfer:
 
                 # 推理
                 with torch.no_grad():
-                    outputs = self.model(batch)
+                    outputs = self.model(source_images)
                     outputs = outputs["outputs"]
                     # 获取第一个条件的输出作为结果
                     # 注意：outputs['outputs']是一个字典，包含每个条件的输出
@@ -92,3 +89,9 @@ class CAMInfer:
                     os.path.join("./infer_results", f'samples_{idx}.png'),
                     nrow=3  # 每行显示3张图像
                 )
+
+
+if __name__ == '__main__':
+    CAM = CAMInfer()
+    CAM.load_model()
+    CAM.inference()
