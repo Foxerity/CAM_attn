@@ -1,7 +1,12 @@
 import json
+import math
 import os
 
 import torch
+from PIL import Image
+from pytorch_fid import fid_score
+from piq import LPIPS
+from torchvision.transforms.functional import to_tensor
 
 from data_loader_plus import get_multi_condition_loaders
 from model_plus import CAMPlus
@@ -24,11 +29,78 @@ def load_config(config_path):
     return config
 
 
+def compute_gfid(fid_dict: dict[str, float]) -> float:
+    """
+    计算几何平均 FID（gFID）。
+
+    Args:
+        fid_dict: 类别到 FID 值的映射
+    Returns:
+        gfid: float
+    """
+    # 只保留 FID>0 的值
+    values = [v for v in fid_dict.values() if v > 0]
+    if not values:
+        raise ValueError("没有合法的 FID 值")
+    # 求对数、平均、再指数化
+    log_sum = sum(math.log(v) for v in values)
+    mean_log = log_sum / len(values)
+    return math.exp(mean_log)
+
+
+def save_inference_tensors(target: torch.Tensor,
+                           source: dict[str, torch.Tensor],
+                           class_names: list[str],
+                           root: str) -> None:
+    """
+    将一批 target 和 source tensors 保存为灰度图，根据 class_name 分类存放。
+
+    Args:
+        target: torch.Tensor, 形状 (B, 1, 128, 128)，值域 [-1, 1]
+        source: dict[str, torch.Tensor]，每个 value 形状同 target
+        class_names: 长度为 B 的字符串列表，对应每个样本的类别
+        root: 保存根目录，会在其下创建 `target/` 和每个 source key 的子目录
+    """
+    # 把所有 tensor 转到 CPU
+    target = target.detach().cpu()
+    for key in source:
+        source[key] = source[key].detach().cpu()
+
+    B, C, H, W = target.shape
+    assert C == 1 and H == 128 and W == 128, "target 尺寸需为 (B,1,128,128)"
+    for key, tensor in source.items():
+        assert tensor.shape == (B, 1, 128, 128), f"source['{key}'] 尺寸需为 (B,1,128,128)"
+    assert len(class_names) == B, "class_names 长度必须等于 batch 大小"
+
+    def _save_one(img_tensor: torch.Tensor, save_dir: str, idx: int):
+        # 归一化到 [0,255]
+        arr = ((img_tensor + 1.0) / 2.0 * 255.0) \
+            .clamp(0, 255) \
+            .to(torch.uint8) \
+            .squeeze(0) \
+            .numpy()  # (128,128)
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, f"{idx}.png")
+        Image.fromarray(arr).save(path)
+
+    for i in range(B):
+        cls = class_names[i]
+        # 保存 target
+        tgt_dir = os.path.join(root, "target", cls)
+        _save_one(target[i], tgt_dir, i)
+
+        # 保存每个 source
+        for key, tensor in source.items():
+            src_dir = os.path.join(root, key, cls)
+            _save_one(tensor[i], src_dir, i)
+
+
+
 class CAMInfer:
     def __init__(self, config_path = "config_infer.json"):
         self.config_path = config_path
         self.config = load_config(self.config_path)
-        self.model_path = r"output_plus/new3_flow1_shareB/new3_flow1_shareB/574-0.05.ckpt"
+        self.model_path = r"output_plus/new3_flow2_shareB/new3_flow2_shareB/568-0.05.ckpt"
         self.train_loader, self.val_loader = get_multi_condition_loaders(self.config)
 
         self.model = None
@@ -96,11 +168,8 @@ class CAMInfer:
                     if condition in outputs:
                         images.append((f"Generated ({condition})", outputs[condition]))
 
-                save_image_grid(
-                    images,
-                    os.path.join("./infer_results", f'samples_{idx}.png'),
-                    nrow=3  # 每行显示3张图像
-                )
+                save_inference_tensors(target_img, outputs, class_name, "./infer_results")
+                # save_batch_tensors_as_images(target_img, class_name, "./infer_results")
 
             # 2. 打印每条分支的平均值
             total_psnr_sum = 0.0
@@ -130,6 +199,68 @@ class CAMInfer:
 
             overall_avg_ssim = total_ssim_sum / total_ssim_count
             print(f"Overall SSIM average: {overall_avg_ssim:.4f}")
+
+            lpips_model = LPIPS()
+            root = "./infer_results"
+            types = os.listdir(root)
+            real_images_folder = 'infer_results/target'
+            cls_fid = {}
+            cls_lpips = {}
+            for typ in types:
+                if typ != 'target':
+                    generated_images_folder = os.path.join(root, typ)
+                    for cls in os.listdir(generated_images_folder):
+                        gen_cls_folder = os.path.join(generated_images_folder, cls)
+                        real_cls_folder = os.path.join(real_images_folder, cls)
+
+                        # —— 1) FID ——
+                        fid_value = fid_score.calculate_fid_given_paths(
+                            [gen_cls_folder, real_cls_folder],
+                            batch_size=50, device=self.config['device'], dims=64
+                        )
+                        cls_fid[cls] = fid_value
+
+                        # —— 2) LPIPS ——
+                        # 2.1 加载所有生成/真实图像
+                        gen_images = sorted(os.listdir(gen_cls_folder))
+                        real_images = sorted(os.listdir(real_cls_folder))
+
+                        fake_tensors = torch.stack([
+                            to_tensor(Image.open(os.path.join(gen_cls_folder, fn)).convert('RGB'))
+                            for fn in gen_images
+                        ]).to(self.config['device'])
+                        real_tensors = torch.stack([
+                            to_tensor(Image.open(os.path.join(real_cls_folder, fn)).convert('RGB'))
+                            for fn in real_images
+                        ]).to(self.config['device'])
+
+                        # 2.2 分批计算 LPIPS
+                        batch_size = 50
+                        with torch.no_grad():
+                            for i in range(0, fake_tensors.size(0), batch_size):
+                                f_batch = fake_tensors[i:i + batch_size]
+                                r_batch = real_tensors[i:i + batch_size]
+                                # LPIPS 返回形如 (B,) 或 (B,1,1)
+                                lpips_vals = lpips_model(f_batch, r_batch)
+
+                        # 2.3 求平均 LPIPS
+                        cls_lpips[cls] = lpips_vals
+
+                        # —— 3) 汇总并打印 ——
+                        # FID
+                    gfid = compute_gfid(cls_fid)
+                    avgfid = sum(cls_fid.values()) / len(cls_fid)
+
+                    # LPIPS
+                    gplips = compute_gfid(cls_lpips)  # gLPIPS 用相同的几何平均函数
+                    avglpips = sum(cls_lpips.values()) / len(cls_lpips)
+
+                    print(f"{typ}  gFID:    {gfid:.5f}, avgFID:    {avgfid:.5f}")
+                    print(f"{typ}  gLPIPS:  {gplips:.5f}, avgLPIPS:  {avglpips:.5f}")
+
+                    cls_fid = {}
+                    cls_lpips = {}
+
 
 
 if __name__ == '__main__':
